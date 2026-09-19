@@ -3,6 +3,7 @@ package scheduler
 import (
 	"math"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 )
@@ -137,22 +138,49 @@ func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) 
 	// 5. Typing indicator: 50-80% of total delay
 	typingIndicatorDuration := clamp(int(float64(totalDelay)*0.65), 500, totalDelay)
 
-	// 6. Double-message check
+	// 6. Double-message check: naturally split at sentence or clause boundaries
 	shouldDouble := false
 	var part1, part2 string
 	if s.rng.Float64() < s.cfg.DoubleMessageProb && charCount > 20 {
 		runes := []rune(replyText)
-		splitIdx := len(runes) / 2
-		for i := splitIdx - 5; i <= splitIdx+5; i++ {
-			if i > 0 && i < len(runes) {
-				ch := runes[i]
-				if ch == '，' || ch == ',' || ch == '！' || ch == '!' || ch == ' ' || ch == '。' {
-					splitIdx = i + 1
-					shouldDouble = true
-					part1 = string(runes[:splitIdx])
-					part2 = string(runes[splitIdx:])
-					break
+		mid := len(runes) / 2
+		bestSplit := -1
+		minDist := len(runes)
+
+		// Priority 1: sentence ends (\n, 。, ！, !, ？, ?, ~)
+		primaryDelims := []rune{'\n', '。', '！', '!', '？', '?', '~'}
+		for i := 4; i < len(runes)-4; i++ {
+			for _, d := range primaryDelims {
+				if runes[i] == d {
+					dist := int(math.Abs(float64(i - mid)))
+					if dist < minDist {
+						minDist = dist
+						bestSplit = i + 1
+					}
 				}
+			}
+		}
+
+		// Priority 2: commas (，, ,) if no sentence boundary found near middle
+		if bestSplit == -1 {
+			for i := 4; i < len(runes)-4; i++ {
+				if runes[i] == '，' || runes[i] == ',' {
+					dist := int(math.Abs(float64(i - mid)))
+					if dist < minDist {
+						minDist = dist
+						bestSplit = i + 1
+					}
+				}
+			}
+		}
+
+		if bestSplit > 0 {
+			p1 := strings.TrimSpace(string(runes[:bestSplit]))
+			p2 := strings.TrimSpace(string(runes[bestSplit:]))
+			if len([]rune(p1)) >= 4 && len([]rune(p2)) >= 4 {
+				shouldDouble = true
+				part1 = p1
+				part2 = p2
 			}
 		}
 	}

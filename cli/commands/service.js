@@ -67,7 +67,21 @@ export async function serviceCommand(action) {
       logger.info(`Stopping EIDOLON daemon (PID: ${pid})...`);
       try {
         process.kill(pid, 'SIGTERM');
-        fs.unlinkSync(pidFile);
+        // Wait up to 5 seconds for process to exit
+        let waited = 0;
+        while (waited < 5000) {
+          await new Promise((r) => setTimeout(r, 200));
+          waited += 200;
+          try {
+            process.kill(pid, 0);
+          } catch (_) {
+            break; // process exited
+          }
+        }
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch (_) {}
+        if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
         logger.success('Service stopped.');
       } catch (err) {
         logger.error(`Failed to kill process ${pid}: ${err.message}`);
@@ -77,7 +91,7 @@ export async function serviceCommand(action) {
 
     case 'restart': {
       await serviceCommand('stop');
-      await new Promise((r) => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 500));
       await serviceCommand('start');
       break;
     }

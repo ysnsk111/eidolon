@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,21 +186,84 @@ func (b *BotService) handleIncoming(msg *Message) {
 	opaqueID := hashUserID(userIDStr, b.cfg.LogSalt)
 	b.store.Log("telegram", "INFO", fmt.Sprintf("Received message session=%s user_hash=%s", sessionID, opaqueID))
 
-	res, err := b.orch.ProcessMessage(sessionID, userIDStr, msg.Text)
-	if err != nil {
-		b.store.Log("telegram", "ERROR", fmt.Sprintf("Orchestrator error session=%s: %v", sessionID, err))
+	trimmedText := strings.TrimSpace(msg.Text)
+
+	// Command Handler: /start
+	if strings.HasPrefix(trimmedText, "/start") {
+		activeP := b.orch.GetPersonaManager().GetActivePersona()
+		var welcome string
+		if activeP != nil {
+			welcome = fmt.Sprintf("👋 你好！我是 %s。\n\n✨ EIDOLON 仿生记忆与人格运行时已激活\n• 人格包: %s\n• 仿真延时: 开启 (基于真实语料分布)\n• 记忆提取与持久化: 正常运行", activeP.Persona.Name, activeP.ID)
+		} else {
+			welcome = fmt.Sprintf("👋 你好！EIDOLON Telegram 机器人连接正常。\n\n• 用户鉴权: 已通过 (ID: %s)\n• 交互模式: 仿人类动态延时与输入模拟\n• 当前状态: 待配置 / 等待激活人格模型\n\n提示：在控制台上传语料并运行 `eidolon distill`，或执行 `eidolon persona activate <id>` 即可开始对话。", userIDStr)
+		}
+		_ = b.sendMessage(msg.Chat.ID, welcome, msg.MessageID)
 		return
 	}
 
-	if b.cfg.SimulateTyping && res.Schedule.TypingDurationMs > 0 {
-		_ = b.sendChatAction(msg.Chat.ID, "typing")
-		time.Sleep(time.Duration(res.Schedule.TypingDurationMs) * time.Millisecond)
-	} else if res.Schedule.TotalDelayMs > 0 {
-		time.Sleep(time.Duration(res.Schedule.TotalDelayMs) * time.Millisecond)
+	// Command Handler: /status
+	if strings.HasPrefix(trimmedText, "/status") {
+		activeP := b.orch.GetPersonaManager().GetActivePersona()
+		var statusText string
+		if activeP != nil {
+			statusText = fmt.Sprintf("📊 EIDOLON 运行时状态:\n• 激活人格: %s (%s)\n• 仿真输入模拟: %v\n• 会话 ID: %s",
+				activeP.Persona.Name, activeP.ID, b.cfg.SimulateTyping, sessionID)
+		} else {
+			statusText = fmt.Sprintf("📊 EIDOLON 运行时状态:\n• 激活人格: 无 (待配置)\n• 仿真输入模拟: %v\n• 会话 ID: %s",
+				b.cfg.SimulateTyping, sessionID)
+		}
+		_ = b.sendMessage(msg.Chat.ID, statusText, msg.MessageID)
+		return
 	}
 
+	// Regular message orchestration
+	res, err := b.orch.ProcessMessage(sessionID, userIDStr, msg.Text)
+	if err != nil {
+		b.store.Log("telegram", "ERROR", fmt.Sprintf("Orchestrator error session=%s: %v", sessionID, err))
+		if strings.Contains(err.Error(), "no active persona") {
+			_ = b.sendMessage(msg.Chat.ID, "⚠️ EIDOLON 当前尚未激活人格模型。\n请在控制台执行 `eidolon persona activate <persona_id>` 激活人格后再与我对话。", msg.MessageID)
+		}
+		return
+	}
+
+	// Dynamic Human-like Lifecycle Timing:
+	// Phase 1: Reading/thinking delay (no typing indicator)
+	totalDelay := res.Schedule.TotalDelayMs
+	typingDuration := res.Schedule.TypingDurationMs
+	if totalDelay < 500 {
+		totalDelay = 500
+	}
+	if typingDuration > totalDelay {
+		typingDuration = totalDelay
+	}
+	readingDelay := totalDelay - typingDuration
+
+	if readingDelay > 0 {
+		time.Sleep(time.Duration(readingDelay) * time.Millisecond)
+	}
+
+	// Phase 2: Typing Simulation (send typing action, refresh every 4s if long typing)
+	if b.cfg.SimulateTyping && typingDuration > 0 {
+		remaining := typingDuration
+		for remaining > 0 {
+			_ = b.sendChatAction(msg.Chat.ID, "typing")
+			step := 4000
+			if remaining < step {
+				step = remaining
+			}
+			time.Sleep(time.Duration(step) * time.Millisecond)
+			remaining -= step
+		}
+	} else if totalDelay > 0 && readingDelay <= 0 {
+		time.Sleep(time.Duration(totalDelay) * time.Millisecond)
+	}
+
+	// Phase 3: Complete message dispatch (with double message support)
 	if res.Schedule.ShouldDoubleMessage && res.Schedule.DoubleMessagePart1 != "" {
 		_ = b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart1, msg.MessageID)
+		if b.cfg.SimulateTyping {
+			_ = b.sendChatAction(msg.Chat.ID, "typing")
+		}
 		time.Sleep(1200 * time.Millisecond)
 		_ = b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart2, 0)
 	} else {
@@ -208,6 +272,9 @@ func (b *BotService) handleIncoming(msg *Message) {
 }
 
 func hashUserID(userID, salt string) string {
+	if salt == "" {
+		salt = "eidolon_default_privacy_salt"
+	}
 	mac := hmac.New(sha256.New, []byte(salt))
 	mac.Write([]byte(userID))
 	full := hex.EncodeToString(mac.Sum(nil))
@@ -264,9 +331,15 @@ func (b *BotService) sendMessage(chatID int64, text string, replyToMsgID int) er
 	payload, _ := json.Marshal(reqMap)
 	resp, err := b.client.Post(url, "application/json", bytes.NewBuffer(payload))
 	if err != nil {
+		b.store.Log("telegram", "ERROR", fmt.Sprintf("sendMessage network error chat=%d: %v", chatID, err))
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.ReadAll(resp.Body)
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		b.store.Log("telegram", "ERROR", fmt.Sprintf("sendMessage HTTP %d to chat=%d: %s", resp.StatusCode, chatID, string(body)))
+		return fmt.Errorf("telegram API HTTP %d", resp.StatusCode)
+	}
 	return nil
 }

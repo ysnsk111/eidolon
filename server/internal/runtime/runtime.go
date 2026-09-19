@@ -50,6 +50,14 @@ func NewOrchestrator(
 	}
 }
 
+func (o *Orchestrator) GetPersonaManager() *persona.PersonaManager {
+	return o.personaMgr
+}
+
+func (o *Orchestrator) GetScheduler() *scheduler.Scheduler {
+	return o.sched
+}
+
 // CriticResult holds the output of the style critic pipeline.
 // P0-9 Fix: critic_score is never fabricated; if not run, status is "not_run" and score is nil.
 type CriticResult struct {
@@ -126,12 +134,13 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 
 	if err == nil {
 		cleaned := cleanOutput(rawGen)
+		jsonStr := extractJSON(cleaned)
 		var candMap struct {
 			CandidateA string `json:"candidate_a"`
 			CandidateB string `json:"candidate_b"`
 			CandidateC string `json:"candidate_c"`
 		}
-		if jsonErr := json.Unmarshal([]byte(cleaned), &candMap); jsonErr == nil && candMap.CandidateA != "" {
+		if jsonErr := json.Unmarshal([]byte(jsonStr), &candMap); jsonErr == nil && candMap.CandidateA != "" {
 			candA = candMap.CandidateA
 			candB = candMap.CandidateB
 			candC = candMap.CandidateC
@@ -290,23 +299,41 @@ func (o *Orchestrator) runCriticPipeline(criticPrompt, candA, candB, candC strin
 }
 
 // sanitizeOutput is a hard safety guardrail that removes AI identity artifacts.
-// P0-8 Fix: This is explicitly NOT the Style Critic. It is renamed from the
-// previous misleading inline keyword-check block to make its role clear.
-// The real StyleCritic is runCriticPipeline above.
+// P0-8 Fix: Instead of leaking "[sanitized]" to human chat partners, it strips
+// offending AI disclaimer clauses or falls back to an authentic persona line.
 func sanitizeOutput(text, personaName string) string {
 	aiMarkers := []string{
 		"opencode", "人工智能", "语言模型", "有什么可以帮您", "有什么我可以帮您",
-		"作为AI", "as an AI", "I'm an AI",
+		"作为AI", "作为一名AI", "作为一个AI", "作为一个人工智能", "as an AI", "I'm an AI",
 	}
 	textLower := strings.ToLower(text)
+	hasMarker := false
 	for _, marker := range aiMarkers {
 		if strings.Contains(textLower, strings.ToLower(marker)) {
-			// Return a safe empty-signal rather than a hard-coded phrase.
-			// Operators should customize this fallback for their persona.
-			return "[sanitized]"
+			hasMarker = true
+			break
 		}
 	}
-	return text
+	if !hasMarker {
+		return text
+	}
+
+	// Try removing the AI disclaimer sentences
+	cleaned := text
+	for _, marker := range aiMarkers {
+		re := regexp.MustCompile(`(?i)[^。！？\n]*` + regexp.QuoteMeta(marker) + `[^。！？\n]*[。！？\n]?`)
+		cleaned = re.ReplaceAllString(cleaned, "")
+	}
+	cleaned = strings.TrimSpace(cleaned)
+	if len([]rune(cleaned)) >= 3 {
+		return cleaned
+	}
+
+	// Fallback to authentic colloquial response if entire message was AI boilerplate
+	if personaName != "" {
+		return "好呀，收到啦~"
+	}
+	return "收到啦~"
 }
 
 func (o *Orchestrator) callLLM(messages []map[string]string, temp float64, maxTokens int) (string, error) {
@@ -365,4 +392,25 @@ func cleanOutput(text string) string {
 	cleaned := re.ReplaceAllString(text, "")
 	cleaned = strings.TrimPrefix(cleaned, "</think>")
 	return strings.TrimSpace(cleaned)
+}
+
+func extractJSON(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "```json") {
+		text = strings.TrimPrefix(text, "```json")
+		if idx := strings.LastIndex(text, "```"); idx != -1 {
+			text = text[:idx]
+		}
+	} else if strings.HasPrefix(text, "```") {
+		text = strings.TrimPrefix(text, "```")
+		if idx := strings.LastIndex(text, "```"); idx != -1 {
+			text = text[:idx]
+		}
+	}
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start != -1 && end > start {
+		return text[start : end+1]
+	}
+	return strings.TrimSpace(text)
 }
