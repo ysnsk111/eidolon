@@ -2,6 +2,9 @@ package telegram
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,20 +18,23 @@ import (
 )
 
 type Config struct {
-	Token         string   `json:"token"`
-	AllowedUsers  []string `json:"allowed_users"`
-	PollTimeout   int      `json:"poll_timeout"`
-	SimulateTyping bool    `json:"simulate_typing"`
+	Token          string   `json:"token"`
+	AllowedUsers   []string `json:"allowed_users"`
+	PollTimeout    int      `json:"poll_timeout"`
+	SimulateTyping bool     `json:"simulate_typing"`
+	LogSalt        string   `json:"log_salt"`
 }
 
 type BotService struct {
-	cfg          Config
-	orch         *runtime.Orchestrator
-	store        *storage.Storage
-	allowedUsers map[string]bool
-	client       *http.Client
-	stopCh       chan struct{}
-	wg           sync.WaitGroup
+	cfg           Config
+	orch           *runtime.Orchestrator
+	store         *storage.Storage
+	allowedUsers  map[string]bool
+	client        *http.Client
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
+	queuesMu      sync.Mutex
+	sessionQueues map[int64]chan *Message
 }
 
 type Update struct {
@@ -61,12 +67,13 @@ func NewBotService(cfg Config, orch *runtime.Orchestrator, store *storage.Storag
 	}
 
 	return &BotService{
-		cfg:          cfg,
-		orch:         orch,
-		store:        store,
-		allowedUsers: allowedMap,
-		client:       &http.Client{Timeout: 45 * time.Second},
-		stopCh:       make(chan struct{}),
+		cfg:           cfg,
+		orch:           orch,
+		store:          store,
+		allowedUsers:  allowedMap,
+		client:        &http.Client{Timeout: 45 * time.Second},
+		stopCh:        make(chan struct{}),
+		sessionQueues: make(map[int64]chan *Message),
 	}
 }
 
@@ -116,15 +123,56 @@ func (b *BotService) pollLoop() {
 
 			userIDStr := strconv.FormatInt(u.Message.From.ID, 10)
 
-			// Section 44: Telegram User Matching allowlist
 			if !b.allowedUsers[userIDStr] {
-				// Silently ignore unauthorized users
-				b.store.Log("telegram", "WARN", fmt.Sprintf("Ignored message from unauthorized user: %s", userIDStr))
+				// P1: do not log raw user IDs
+				b.store.Log("telegram", "WARN", "Ignored message from unauthorized user")
 				continue
 			}
 
-			// Process message in goroutine
-			go b.handleIncoming(u.Message)
+			// P1: enqueue into per-session queue (sequential within chat)
+			b.enqueueMessage(u.Message)
+		}
+	}
+}
+
+func (b *BotService) enqueueMessage(msg *Message) {
+	chatID := msg.Chat.ID
+
+	b.queuesMu.Lock()
+	ch, exists := b.sessionQueues[chatID]
+	if !exists {
+		ch = make(chan *Message, 64)
+		b.sessionQueues[chatID] = ch
+		b.wg.Add(1)
+		go b.sessionWorker(chatID, ch)
+	}
+	b.queuesMu.Unlock()
+
+	select {
+	case ch <- msg:
+	default:
+		b.store.Log("telegram", "WARN", "session queue full; dropping message")
+	}
+}
+
+func (b *BotService) sessionWorker(chatID int64, ch chan *Message) {
+	defer b.wg.Done()
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			b.handleIncoming(msg)
+		case <-b.stopCh:
+			for {
+				select {
+				case msg := <-ch:
+					b.handleIncoming(msg)
+				default:
+					return
+				}
+			}
 		}
 	}
 }
@@ -133,15 +181,16 @@ func (b *BotService) handleIncoming(msg *Message) {
 	userIDStr := strconv.FormatInt(msg.From.ID, 10)
 	sessionID := fmt.Sprintf("tg_chat_%d", msg.Chat.ID)
 
-	b.store.Log("telegram", "INFO", fmt.Sprintf("Received message from allowed user %s: %s", userIDStr, msg.Text))
+	// P1: log opaque hash instead of raw Telegram ID
+	opaqueID := hashUserID(userIDStr, b.cfg.LogSalt)
+	b.store.Log("telegram", "INFO", fmt.Sprintf("Received message session=%s user_hash=%s", sessionID, opaqueID))
 
 	res, err := b.orch.ProcessMessage(sessionID, userIDStr, msg.Text)
 	if err != nil {
-		b.store.Log("telegram", "ERROR", fmt.Sprintf("Orchestrator error: %v", err))
+		b.store.Log("telegram", "ERROR", fmt.Sprintf("Orchestrator error session=%s: %v", sessionID, err))
 		return
 	}
 
-	// Section 46 & 47: Simulate realistic human typing delay
 	if b.cfg.SimulateTyping && res.Schedule.TypingDurationMs > 0 {
 		_ = b.sendChatAction(msg.Chat.ID, "typing")
 		time.Sleep(time.Duration(res.Schedule.TypingDurationMs) * time.Millisecond)
@@ -149,7 +198,6 @@ func (b *BotService) handleIncoming(msg *Message) {
 		time.Sleep(time.Duration(res.Schedule.TotalDelayMs) * time.Millisecond)
 	}
 
-	// Section 45: Zero streaming - send single complete message
 	if res.Schedule.ShouldDoubleMessage && res.Schedule.DoubleMessagePart1 != "" {
 		_ = b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart1, msg.MessageID)
 		time.Sleep(1200 * time.Millisecond)
@@ -157,6 +205,13 @@ func (b *BotService) handleIncoming(msg *Message) {
 	} else {
 		_ = b.sendMessage(msg.Chat.ID, res.FinalMessage, msg.MessageID)
 	}
+}
+
+func hashUserID(userID, salt string) string {
+	mac := hmac.New(sha256.New, []byte(salt))
+	mac.Write([]byte(userID))
+	full := hex.EncodeToString(mac.Sum(nil))
+	return "user_" + full[:12]
 }
 
 func (b *BotService) getUpdates(offset int) ([]Update, error) {
