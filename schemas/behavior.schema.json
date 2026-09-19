@@ -5,8 +5,7 @@
   "required": [
     "version",
     "response_policies",
-    "conversation_rhythm",
-    "reply_mode_preference"
+    "conversation_rhythm"
   ],
   "properties": {
     "version": { "type": "string" },
@@ -14,10 +13,12 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["situation", "strategy", "length_bias", "emoji_probability", "follow_up_probability"],
         "properties": {
           "situation": { "type": "string" },
-          "strategy": { "type": "string" },
+          "strategy": { "type": ["string", "null"] },
+          "observed_strategy": { "type": ["string", "null"] },
+          "evidence_count": { "type": "number" },
+          "confidence": { "type": ["string", "number"] },
           "length_bias": { "type": "string", "enum": ["micro", "short", "medium", "long"] },
           "emoji_probability": { "type": "number", "minimum": 0, "maximum": 1 },
           "follow_up_probability": { "type": "number", "minimum": 0, "maximum": 1 }
@@ -26,13 +27,20 @@
     },
     "conversation_rhythm": {
       "type": "object",
-      "required": ["base_delay_ms", "typing_speed_cpm", "double_message_probability", "topic_switch_probability"],
+      "required": ["base_delay_ms"],
       "properties": {
-        "base_delay_ms": { "type": "number", "minimum": 500 },
-        "typing_speed_cpm": { "type": "number", "minimum": 50 },
+        "base_delay_ms": { "type": ["number", "null"], "minimum": 500 },
+        "p90_delay_ms": { "type": ["number", "null"] },
+        "typing_speed_cpm": { "type": ["number", "null"] },
+        "response_latency": { "type": "object" },
+        "latency_model": { "type": "object" },
         "double_message_probability": { "type": "number", "minimum": 0, "maximum": 1 },
-        "topic_switch_probability": { "type": "number", "minimum": 0, "maximum": 1 }
+        "topic_switch_probability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "typing_model": { "type": "object" }
       }
+    },
+    "conditional_style": {
+      "type": "object"
     },
     "reply_mode_preference": {
       "type": "object",
