@@ -147,7 +147,7 @@ Output strictly JSON:
 
   const persona = {
     id: personaId,
-    version: '1.0.0',
+    version: '1.1.0',
     name,
     created_at: new Date().toISOString(),
     target_speaker: targetSpeaker,

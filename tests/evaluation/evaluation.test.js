@@ -59,4 +59,42 @@ describe('Evaluation Engine & DSI Formula Tests', () => {
     assert.ok(report.gate_results.dsi_pass);
     assert.ok(report.gate_results.behavior_pass);
   });
+
+  test('runEvaluation must return INSUFFICIENT_DATA without synthetic calibration on empty blind test set', async () => {
+    const { runEvaluation } = await import('../../cli/evaluation/runner.js');
+    const report = await runEvaluation({
+      persona: { id: 'test_persona', system_prompts: { generator: 'prompt' }, target_speaker: 'Alice' },
+      testDataset: [],
+      languageModel: {},
+      styleModel: {},
+      behaviorModel: {},
+      worldModel: {},
+    });
+
+    assert.strictEqual(report.status, 'INSUFFICIENT_DATA');
+    assert.strictEqual(report.dataset_size, 0);
+    assert.strictEqual(report.dsi, null);
+    assert.strictEqual(report.metrics.lexical, null);
+    assert.strictEqual(report.metrics.context, null);
+  });
+
+  test('aggregateEvaluationResults correctly renormalizes weights when context score is null', () => {
+    const sampleResults = [
+      {
+        sample_id: 'test_no_c',
+        context: dummyContext,
+        original_target: targetMessage,
+        generated_candidate: candidateMessage,
+        metrics: { lexical: 0.80, style: 0.80, behavior: 0.80, context: null, issues: [] },
+        judge: { score: 0.80 },
+      },
+    ];
+
+    const report = aggregateEvaluationResults({ sampleResults, personaId: 'persona_no_c' });
+    // Expected DSI = (0.80*0.20 + 0.80*0.20 + 0.80*0.25 + 0.80*0.20) / 0.85 = 0.80 / 0.85 * 0.85 = 0.80
+    assert.strictEqual(report.metrics.context, null);
+    assert.ok(Math.abs(report.dsi - 0.80) < 0.005);
+    assert.strictEqual(Number.isNaN(report.dsi), false);
+  });
 });
+

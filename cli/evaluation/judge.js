@@ -96,8 +96,11 @@ export async function executeBlindPairwiseJudge({
   if (Math.abs(targetEmojis - candEmojis) > 2) reasonCodes.push('emoji_overuse');
 
   const score = round(Math.min(0.95, Math.max(0.40, 0.55 + lenRatio * 0.35)), 3);
-  const favoredGenerated = lenRatio >= 0.70;
   const winner = lenRatio >= 0.85 ? 'TIE' : (isTargetA ? 'A' : 'B');
+  const favoredGenerated =
+    (isTargetA && winner === 'B') ||
+    (!isTargetA && winner === 'A') ||
+    winner === 'TIE';
 
   return {
     blind_winner: winner,

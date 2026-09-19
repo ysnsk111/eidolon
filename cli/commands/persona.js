@@ -20,12 +20,37 @@ export async function personaCommand(action, target, options) {
       logger.divider();
       console.log(pc.bold(pc.cyan('EIDOLON Installed Personas:')));
 
-      const resultDir = path.join(process.cwd(), 'completed_result');
       const personas = [];
+      const seenIds = new Set();
 
+      // 1. Query SQLite personas table (Section 13)
+      try {
+        const rows = db.prepare(`SELECT id, name, target_speaker, created_at, dsi_score, is_active, manifest_json, package_path FROM personas ORDER BY created_at DESC`).all();
+        for (const r of rows) {
+          let status = 'PASS';
+          try {
+            if (r.manifest_json) {
+              const m = JSON.parse(r.manifest_json);
+              status = m.evaluation_status || (r.dsi_score >= 0.8 ? 'PASS' : 'NEEDS_OPTIMIZATION');
+            }
+          } catch (_) {}
+          personas.push({
+            id: r.id,
+            name: r.name,
+            dsi: r.dsi_score,
+            status,
+            active: r.is_active === 1 || config.activePersona === r.id,
+          });
+          seenIds.add(r.id);
+        }
+      } catch (_) {}
+
+      // 2. Discover any additional packages directly in completed_result/
+      const resultDir = path.join(process.cwd(), 'completed_result');
       if (fs.existsSync(resultDir)) {
         const dirs = fs.readdirSync(resultDir);
         for (const d of dirs) {
+          if (seenIds.has(d)) continue;
           const pDir = path.join(resultDir, d);
           const manifestPath = path.join(pDir, 'manifest.json');
           if (fs.existsSync(manifestPath)) {
@@ -38,13 +63,14 @@ export async function personaCommand(action, target, options) {
                 status: manifest.evaluation_status,
                 active: config.activePersona === manifest.persona_id,
               });
+              seenIds.add(manifest.persona_id);
             } catch (_) {}
           }
         }
       }
 
       if (personas.length === 0) {
-        logger.info('No distilled personas found in completed_result/. Run `eidolon distill <file>` first.');
+        logger.info('No distilled personas found in completed_result/ or SQLite database. Run `eidolon distill <file>` first.');
       } else {
         const table = new Table({
           head: ['Active', 'Persona ID', 'Package Name', 'DSI Score', 'Status'],
@@ -78,6 +104,10 @@ export async function personaCommand(action, target, options) {
       }
 
       updateConfig('activePersona', target);
+      try {
+        db.prepare(`UPDATE personas SET is_active = 0`).run();
+        db.prepare(`UPDATE personas SET is_active = 1 WHERE id = ?`).run(target);
+      } catch (_) {}
       logger.success(`Activated persona: ${pc.bold(target)}`);
       break;
     }
@@ -196,7 +226,13 @@ function extractZipBundle(zipPath, destDir) {
 
       zipfile.readEntry();
       zipfile.on('entry', (entry) => {
-        const destPath = path.join(destDir, entry.fileName);
+        // Guard against Zip Slip path traversal vulnerability
+        const safePath = path.normalize(entry.fileName).replace(/^(\.\.[\/\\])+/, '');
+        const destPath = path.resolve(destDir, safePath);
+        if (!destPath.startsWith(path.resolve(destDir) + path.sep) && destPath !== path.resolve(destDir)) {
+          return reject(new Error(`Malicious zip entry path traversal detected: ${entry.fileName}`));
+        }
+
         if (/\/$/.test(entry.fileName)) {
           fs.mkdirSync(destPath, { recursive: true });
           zipfile.readEntry();

@@ -21,6 +21,7 @@ export async function runDistillationPipeline({
   llmProvider = null,
   maxOptimizationRounds = 2,
   qualityGateThreshold = 0.80,
+  judgeModel = null,
 }) {
   const timestampStr = new Date()
     .toISOString()
@@ -88,8 +89,7 @@ export async function runDistillationPipeline({
   );
 
   const firstConversationTimestamp =
-    normalizedData.messages?.find((m) => m.timestamp)?.timestamp ||
-    new Date().toISOString();
+    normalizedData.messages?.find((m) => m.timestamp)?.timestamp || null;
 
   const memorySeed = {
     version: '1.1.0',
@@ -106,10 +106,15 @@ export async function runDistillationPipeline({
               ? 0.70
               : 0.55;
 
+      const evtTimestamp = evt.date_or_period || evt.timestamp || firstConversationTimestamp || null;
+      const temporalPrecision = (evt.date_or_period || evt.timestamp)
+        ? 'exact_or_period'
+        : (firstConversationTimestamp ? 'inferred_from_session' : 'unknown');
+
       return {
         id: evt.event_id || `ep_${idx + 1}`,
-        timestamp: evt.date_or_period || evt.timestamp || firstConversationTimestamp,
-        temporal_precision: evt.date_or_period ? 'exact_or_period' : 'inferred_from_session',
+        timestamp: evtTimestamp,
+        temporal_precision: temporalPrecision,
         summary: `${evt.title}: ${evt.description}`,
         importance_score: impScore,
         sentiment: evt.sentiment || 'neutral',
@@ -118,7 +123,10 @@ export async function runDistillationPipeline({
     }),
     facts: (worldModel.entities || []).map((ent) => {
       const explicitTime = ent.provenance_timestamp || ent.first_mentioned || ent.timestamp;
-      const validFrom = explicitTime || firstConversationTimestamp;
+      const validFrom = explicitTime || firstConversationTimestamp || null;
+      const temporalPrecision = explicitTime
+        ? 'timestamped'
+        : (firstConversationTimestamp ? 'inferred_from_session' : 'unknown');
       const confidence = typeof ent.confidence === 'number' ? ent.confidence : (ent.evidence_count > 2 ? 0.90 : 0.75);
 
       return {
@@ -129,7 +137,7 @@ export async function runDistillationPipeline({
             value: ent.description,
             valid_from: validFrom,
             valid_to: null,
-            temporal_precision: explicitTime ? 'timestamped' : 'inferred_from_session',
+            temporal_precision: temporalPrecision,
             confidence,
           },
         ],
@@ -160,6 +168,7 @@ export async function runDistillationPipeline({
     behaviorModel,
     worldModel,
     llmProvider,
+    judgeModel: judgeModel || llmProvider?.judgeModel,
   });
 
   // Distillation Optimization Loop if quality gate not yet satisfied
@@ -189,6 +198,7 @@ export async function runDistillationPipeline({
       behaviorModel,
       worldModel,
       llmProvider,
+      judgeModel: judgeModel || llmProvider?.judgeModel,
     });
   }
 
@@ -201,7 +211,7 @@ export async function runDistillationPipeline({
     evaluation_status: evalReport.status,
     model_metadata: {
       distillation_model: llmProvider?.model || 'heuristic',
-      judgeModel: llmProvider?.judgeModel || 'heuristic',
+      judge_model: judgeModel || llmProvider?.judgeModel || 'heuristic',
       temperature: 0.7,
     },
     components: {

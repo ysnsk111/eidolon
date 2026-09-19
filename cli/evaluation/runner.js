@@ -17,6 +17,7 @@ export async function runEvaluation({
   worldModel,
   llmProvider = null,
   sampleLimit = 15,
+  judgeModel = null,
 }) {
   const samples = (testDataset || []).slice(0, sampleLimit);
   const sampleResults = [];
@@ -51,6 +52,7 @@ export async function runEvaluation({
       originalTarget: sample.target_message,
       generatedCandidate: candidate,
       llmProvider,
+      judgeModel: judgeModel || (llmProvider ? llmProvider.judgeModel : null),
     });
 
     sampleResults.push({

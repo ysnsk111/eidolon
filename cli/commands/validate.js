@@ -5,7 +5,8 @@ import Ajv from 'ajv';
 import pc from 'picocolors';
 import { logger } from '../utils/logger.js';
 
-const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: true });
+ajv.addFormat('date-time', (str) => typeof str === 'string' && !Number.isNaN(Date.parse(str)));
 
 /**
  * EIDOLON Package Schema Validator
@@ -145,6 +146,12 @@ function readZipContents(zipPath) {
 
       zipfile.readEntry();
       zipfile.on('entry', (entry) => {
+        const safePath = path.normalize(entry.fileName).replace(/^(\.\.[\/\\])+/, '');
+        if (safePath !== entry.fileName && entry.fileName.includes('..')) {
+          zipfile.readEntry();
+          return;
+        }
+
         if (/\/$/.test(entry.fileName)) {
           zipfile.readEntry();
         } else if (entry.fileName.endsWith('.json')) {
@@ -155,7 +162,7 @@ function readZipContents(zipPath) {
             readStream.on('end', () => {
               try {
                 const text = Buffer.concat(chunks).toString('utf-8');
-                map[entry.fileName] = JSON.parse(text);
+                map[safePath] = JSON.parse(text);
               } catch (_) {}
               zipfile.readEntry();
             });

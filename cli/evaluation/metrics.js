@@ -188,6 +188,18 @@ function calculateStyleScore(target, candidate, styleModel, issues) {
       distSum += Math.abs(actual - m.repeated_char_rate);
       distCount++;
     }
+    if (typeof m.emoji_density === 'number') {
+      const actualDensity = candidateFeat.emojiCount / Math.max(1, candidate.length);
+      distSum += Math.min(1.0, Math.abs(actualDensity - m.emoji_density) * 2.0);
+      distCount++;
+    }
+
+    if (typeof styleModel?.length_distribution?.median === 'number' && styleModel.length_distribution.median > 0) {
+      const med = styleModel.length_distribution.median;
+      const lenDelta = Math.abs(candidate.length - med) / Math.max(candidate.length, med);
+      distSum += Math.min(1.0, lenDelta);
+      distCount++;
+    }
 
     if (distCount > 0) {
       const avgDist = distSum / distCount;

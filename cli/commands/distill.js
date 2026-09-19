@@ -48,6 +48,7 @@ export async function distillCommand(file, options) {
       targetSpeaker: options.target,
       llmProvider,
       qualityGateThreshold: qualityGate,
+      judgeModel: options.judgeModel || config.llm?.judgeModel,
     });
 
     printEvaluationTable(result.evaluationReport);

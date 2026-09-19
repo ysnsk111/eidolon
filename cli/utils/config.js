@@ -24,8 +24,8 @@ export const DEFAULT_CONFIG = {
   bot: {
     telegramToken: process.env.EIDOLON_TELEGRAM_TOKEN || '',
     allowedUsers: process.env.EIDOLON_ALLOWED_USERS
-      ? process.env.EIDOLON_ALLOWED_USERS.split(',').map((id) => id.trim())
-      : ['8287471787'],
+      ? process.env.EIDOLON_ALLOWED_USERS.split(',').map((id) => id.trim()).filter(Boolean)
+      : [],
     pollTimeout: 30,
     enableTypingSimulation: true,
   },

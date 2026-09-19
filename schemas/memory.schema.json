@@ -21,7 +21,7 @@
         "required": ["id", "timestamp", "summary", "importance_score", "sentiment"],
         "properties": {
           "id": { "type": "string" },
-          "timestamp": { "type": "string" },
+          "timestamp": { "type": ["string", "null"] },
           "summary": { "type": "string" },
           "importance_score": { "type": "number", "minimum": 0, "maximum": 1 },
           "sentiment": { "type": "string" },
@@ -44,7 +44,7 @@
               "required": ["value", "valid_from"],
               "properties": {
                 "value": {},
-                "valid_from": { "type": "string" },
+                "valid_from": { "type": ["string", "null"] },
                 "valid_to": { "type": ["string", "null"] },
                 "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
               }
