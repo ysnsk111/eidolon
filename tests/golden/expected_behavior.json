@@ -1,0 +1,14 @@
+{
+  "target_speaker": "Alice",
+  "expected_style_habits": {
+    "has_tilde": true,
+    "has_particles": true,
+    "playful_when_teased": true,
+    "empathic_when_stressed": true
+  },
+  "expected_rhythm": {
+    "typing_speed_cpm": null,
+    "typing_model_enabled": false,
+    "double_message_probability_max": 0.35
+  }
+}

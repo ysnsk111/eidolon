@@ -42,7 +42,9 @@ describe('Distillation Pipeline Tests', () => {
 
     assert.ok(typeof behavior.conditional_style.p_emoji_given_joking === 'number');
     assert.ok(behavior.conversation_rhythm.base_delay_ms >= 1200);
-    assert.ok(behavior.conversation_rhythm.typing_speed_cpm > 100);
+    assert.strictEqual(behavior.conversation_rhythm.typing_speed_cpm, null, 'Typing speed CPM must not be fabricated from chat timestamps');
+    assert.strictEqual(behavior.conversation_rhythm.typing_model.enabled, false);
+    assert.ok(behavior.conversation_rhythm.response_latency);
     assert.ok(Array.isArray(behavior.response_policies));
     assert.ok(behavior.response_policies.length > 0);
   });

@@ -1,0 +1,15 @@
+{
+  "preference_candidates": [
+    {
+      "category": "user_preference",
+      "keyword": "拉面"
+    }
+  ],
+  "milestone_candidates": [
+    {
+      "category": "milestone_event",
+      "keyword": "期末考试"
+    }
+  ],
+  "temporal_versioning_required": true
+}
