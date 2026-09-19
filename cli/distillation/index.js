@@ -87,31 +87,55 @@ export async function runDistillationPipeline({
     llmProvider
   );
 
+  const firstConversationTimestamp =
+    normalizedData.messages?.find((m) => m.timestamp)?.timestamp ||
+    new Date().toISOString();
+
   const memorySeed = {
-    version: '1.0.0',
+    version: '1.1.0',
     persona_id: personaId,
     working_memory: { recent_turns: [], active_topic: '', user_state: 'neutral' },
-    episodes: worldModel.timeline.map((evt, idx) => ({
-      id: evt.event_id || `ep_${idx + 1}`,
-      timestamp: evt.date_or_period || new Date().toISOString(),
-      summary: `${evt.title}: ${evt.description}`,
-      importance_score: 0.85,
-      sentiment: 'neutral',
-      source: evt.provenance,
-    })),
-    facts: worldModel.entities.map((ent) => ({
-      key: `entity_${ent.name}`,
-      category: ent.type,
-      versions: [
-        {
-          value: ent.description,
-          valid_from: '2026-01-01',
-          valid_to: null,
-          confidence: 0.95,
-        },
-      ],
-    })),
-    timeline: worldModel.timeline,
+    episodes: (worldModel.timeline || []).map((evt, idx) => {
+      const impScore = typeof evt.importance_score === 'number'
+        ? evt.importance_score
+        : evt.significance === 'critical'
+          ? 0.95
+          : evt.significance === 'high'
+            ? 0.85
+            : evt.significance === 'medium'
+              ? 0.70
+              : 0.55;
+
+      return {
+        id: evt.event_id || `ep_${idx + 1}`,
+        timestamp: evt.date_or_period || evt.timestamp || firstConversationTimestamp,
+        temporal_precision: evt.date_or_period ? 'exact_or_period' : 'inferred_from_session',
+        summary: `${evt.title}: ${evt.description}`,
+        importance_score: impScore,
+        sentiment: evt.sentiment || 'neutral',
+        source: evt.provenance || 'historical_conversation',
+      };
+    }),
+    facts: (worldModel.entities || []).map((ent) => {
+      const explicitTime = ent.provenance_timestamp || ent.first_mentioned || ent.timestamp;
+      const validFrom = explicitTime || firstConversationTimestamp;
+      const confidence = typeof ent.confidence === 'number' ? ent.confidence : (ent.evidence_count > 2 ? 0.90 : 0.75);
+
+      return {
+        key: `entity_${ent.name}`,
+        category: ent.type || 'entity',
+        versions: [
+          {
+            value: ent.description,
+            valid_from: validFrom,
+            valid_to: null,
+            temporal_precision: explicitTime ? 'timestamped' : 'inferred_from_session',
+            confidence,
+          },
+        ],
+      };
+    }),
+    timeline: worldModel.timeline || [],
   };
 
   logger.step(7, 8, 'Constructing Persona Package with 1:1 Complete Agent System Prompts...');
@@ -140,7 +164,7 @@ export async function runDistillationPipeline({
 
   // Distillation Optimization Loop if quality gate not yet satisfied
   let optimizationRound = 0;
-  while (evalReport.dsi < qualityGateThreshold && optimizationRound < maxOptimizationRounds) {
+  while (evalReport.dsi !== null && evalReport.dsi < qualityGateThreshold && optimizationRound < maxOptimizationRounds) {
     optimizationRound++;
     logger.warn(`DSI score (${(evalReport.dsi * 100).toFixed(1)}%) below gate (${(qualityGateThreshold * 100).toFixed(1)}%). Running Optimization Loop Round ${optimizationRound}...`);
 
@@ -169,7 +193,7 @@ export async function runDistillationPipeline({
   }
 
   const manifest = {
-    eidolon_version: '1.0.0',
+    eidolon_version: '1.1.0',
     package_name: `eidolon-persona-${detectedTarget.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
     persona_id: personaId,
     created_at: new Date().toISOString(),
@@ -213,8 +237,8 @@ export async function runDistillationPipeline({
 
   logger.success(`Distillation completed!`);
   logger.info(`Persona Directory: ${exportResult.packageDir}`);
-  logger.info(`Compressed Bundle: ${exportResult.archivePath}`);
-  logger.info(`Final DSI Score: ${(evalReport.dsi * 100).toFixed(1)}% [${evalReport.status}]`);
+  const dsiStr = typeof evalReport.dsi === 'number' && !Number.isNaN(evalReport.dsi) ? `${(evalReport.dsi * 100).toFixed(1)}%` : 'N/A';
+  logger.info(`Final DSI Score: ${dsiStr} [${evalReport.status}]`);
 
   return {
     personaId,

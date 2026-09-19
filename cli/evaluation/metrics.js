@@ -45,14 +45,20 @@ export function calculateSampleMetrics({
  * Dimension L: Lexical Similarity
  * Combines token overlap, character n-gram cosine, punctuation distribution, and vocabulary fidelity.
  */
+/**
+ * Dimension L: Lexical Similarity
+ * Combines character 1-gram, 2-gram, and 3-gram cosine similarity, vocabulary fidelity,
+ * punctuation distribution, and length ratios.
+ */
 function calculateLexicalScore(target, candidate, languageModel, issues) {
   if (!target || !candidate) return 0.05;
   if (target === candidate) return 1.0;
 
-  // 1. n-gram cosine: character unigram + bigram cosine (0.30)
+  // 1. n-gram cosine: character unigram + bigram + trigram cosine (0.30)
   const unigramCosine = cosineSimilarity(charNgramFreq(target, 1), charNgramFreq(candidate, 1));
   const bigramCosine = cosineSimilarity(charNgramFreq(target, 2), charNgramFreq(candidate, 2));
-  const ngramScore = unigramCosine * 0.55 + bigramCosine * 0.45;
+  const trigramCosine = cosineSimilarity(charNgramFreq(target, 3), charNgramFreq(candidate, 3));
+  const ngramScore = unigramCosine * 0.35 + bigramCosine * 0.35 + trigramCosine * 0.30;
 
   // 2. Vocabulary fidelity & catchphrase overlap (0.20)
   const topVocabList = languageModel?.vocabulary_profile?.top_vocabulary || [];
@@ -93,8 +99,6 @@ function calculateLexicalScore(target, candidate, languageModel, issues) {
   const avgCandSentLen = candidate.length / Math.max(1, candidateSentences.length);
   const sentenceLenRatio = Math.min(avgTargetSentLen, avgCandSentLen) / Math.max(avgTargetSentLen, avgCandSentLen);
 
-  // Exact Section 9 Formula:
-  // L = 0.30 ngram + 0.20 vocabulary + 0.20 punctuation + 0.15 message length + 0.15 sentence length
   const lexical = round(
     0.30 * ngramScore +
     0.20 * vocabFidelity +
@@ -109,13 +113,16 @@ function calculateLexicalScore(target, candidate, languageModel, issues) {
 
 /**
  * Dimension S: Structural Style Similarity
- * Distribution-based comparison on message length buckets, sentence metrics, punctuation, and emojis.
+ * Distilled style distribution similarity (60%) + Local sample style match (40%).
  */
 function calculateStyleScore(target, candidate, styleModel, issues) {
+  if (!target || !candidate) return 0.05;
+  if (target === candidate) return 1.0;
+
   const targetFeat = extractStyleFeatures(target);
   const candidateFeat = extractStyleFeatures(candidate);
 
-  // 1. Emoji count and position delta
+  // 1. Local style match (target sample vs candidate sample)
   const emojiDelta = Math.abs(targetFeat.emojiCount - candidateFeat.emojiCount);
   const emojiScore = emojiDelta === 0 ? 1.0 : emojiDelta === 1 ? 0.80 : Math.max(0.20, 1.0 - emojiDelta * 0.25);
 
@@ -125,132 +132,233 @@ function calculateStyleScore(target, candidate, styleModel, issues) {
     issues.push('excessive emoji spam');
   }
 
-  // 2. Ellipsis presence & rhythm
   const ellipsisScore = targetFeat.hasEllipsis === candidateFeat.hasEllipsis ? 1.0 : 0.40;
-
-  // 3. Question mark presence
   const questionScore = targetFeat.hasQuestion === candidateFeat.hasQuestion ? 1.0 : 0.50;
-
-  // 4. Exclamation mark presence
   const exclamationScore = targetFeat.hasExclamation === candidateFeat.hasExclamation ? 1.0 : 0.60;
-
-  // 5. Terminal punctuation drop (casual chats typically omit trailing full stops)
+  const tildeScore = targetFeat.hasTilde === candidateFeat.hasTilde ? 1.0 : 0.65;
   const terminalScore = targetFeat.cleanTerminal === candidateFeat.cleanTerminal ? 1.0 : 0.65;
-
-  // 6. Message length bucket match (micro, short, medium, long)
   const bucketDistance = Math.abs(targetFeat.lengthBucketIdx - candidateFeat.lengthBucketIdx);
   const bucketScore = bucketDistance === 0 ? 1.0 : bucketDistance === 1 ? 0.70 : 0.35;
-
-  // 7. Repeated character frequency (e.g. 哈哈哈, 呀呀呀)
   const repetitionScore = targetFeat.hasRepetition === candidateFeat.hasRepetition ? 1.0 : 0.55;
 
-  const style = round(
-    emojiScore * 0.20 +
-    ellipsisScore * 0.15 +
-    questionScore * 0.15 +
+  const localStyleMatch =
+    emojiScore * 0.18 +
+    ellipsisScore * 0.13 +
+    questionScore * 0.13 +
     exclamationScore * 0.10 +
-    terminalScore * 0.15 +
-    bucketScore * 0.15 +
-    repetitionScore * 0.10,
-    3
-  );
+    tildeScore * 0.10 +
+    terminalScore * 0.14 +
+    bucketScore * 0.12 +
+    repetitionScore * 0.10;
 
+  // 2. Distilled style distribution similarity (candidate vs persona styleModel distribution)
+  let distributionSimilarity = localStyleMatch;
+  if (styleModel && styleModel.metrics) {
+    const m = styleModel.metrics;
+    let distSum = 0;
+    let distCount = 0;
+
+    if (typeof m.ellipsis_rate === 'number') {
+      const actual = candidateFeat.hasEllipsis ? 1.0 : 0.0;
+      distSum += Math.abs(actual - m.ellipsis_rate);
+      distCount++;
+    }
+    if (typeof m.question_rate === 'number') {
+      const actual = candidateFeat.hasQuestion ? 1.0 : 0.0;
+      distSum += Math.abs(actual - m.question_rate);
+      distCount++;
+    }
+    if (typeof m.exclamation_rate === 'number') {
+      const actual = candidateFeat.hasExclamation ? 1.0 : 0.0;
+      distSum += Math.abs(actual - m.exclamation_rate);
+      distCount++;
+    }
+    if (typeof m.tilde_rate === 'number') {
+      const actual = candidateFeat.hasTilde ? 1.0 : 0.0;
+      distSum += Math.abs(actual - m.tilde_rate);
+      distCount++;
+    }
+    if (typeof m.terminal_punctuation_drop_rate === 'number') {
+      const actual = candidateFeat.cleanTerminal ? 1.0 : 0.0;
+      distSum += Math.abs(actual - m.terminal_punctuation_drop_rate);
+      distCount++;
+    }
+    if (typeof m.repeated_char_rate === 'number') {
+      const actual = candidateFeat.hasRepetition ? 1.0 : 0.0;
+      distSum += Math.abs(actual - m.repeated_char_rate);
+      distCount++;
+    }
+
+    if (distCount > 0) {
+      const avgDist = distSum / distCount;
+      distributionSimilarity = Math.max(0.15, 1.0 - avgDist * 0.85);
+    }
+  }
+
+  // Combined Style Formula: 60% Distribution Similarity + 40% Local Style Match
+  const style = round(0.60 * distributionSimilarity + 0.40 * localStyleMatch, 3);
   return Math.min(1.0, Math.max(0.05, style));
 }
 
 /**
  * Dimension B: Behavioral Similarity
- * Real feature-vector behavioral comparison (playfulness, empathy, follow-up, tone).
+ * 0.40 Target-Candidate + 0.40 Candidate-DistilledModel + 0.20 Context-PolicyAlignment.
  */
 function calculateBehaviorScore(context, target, candidate, behaviorModel, issues) {
-  const contextStr = context.map((c) => c.content).join(' ');
+  if (!target || !candidate) return 0.05;
+  if (target === candidate) return 1.0;
 
-  // Feature vector extraction
-  const targetBehav = extractBehaviorFeatures(target);
-  const candidateBehav = extractBehaviorFeatures(candidate);
-
-  let alignmentSum = 0;
-  let featureWeights = 0;
-
-  // Check 1: Teasing / Banter Context
-  const isTeasing = /(哈哈|233|逗你|开玩笑|笑死|好玩|逗比|lol|haha)/i.test(contextStr);
-  if (isTeasing) {
-    const playfulMatch = targetBehav.isPlayful === candidateBehav.isPlayful ? 1.0 : 0.35;
-    alignmentSum += playfulMatch * 1.5;
-    featureWeights += 1.5;
-    if (targetBehav.isPlayful && !candidateBehav.isPlayful) {
-      issues.push('lacks playful bantering response strategy');
-    }
-  }
-
-  // Check 2: Emotional / Venting Context
-  const isEmotional = /(难过|伤心|哭|委屈|抑郁|烦|累死|心碎|难受|惨)/i.test(contextStr);
-  if (isEmotional) {
-    const gentleMatch = targetBehav.isGentle === candidateBehav.isGentle ? 1.0 : 0.30;
-    alignmentSum += gentleMatch * 1.5;
-    featureWeights += 1.5;
-    if (targetBehav.isGentle && !candidateBehav.isGentle && candidate.length < 6) {
-      issues.push('insufficient emotional acknowledgment');
-    }
-  }
-
-  // Check 3: Follow-up / Question-back behavior
-  const questionMatch = targetBehav.hasQuestionBack === candidateBehav.hasQuestionBack ? 1.0 : 0.60;
-  alignmentSum += questionMatch * 1.0;
-  featureWeights += 1.0;
-
-  // Check 4: Tone formality balance
-  const formalityMatch = targetBehav.isFormal === candidateBehav.isFormal ? 1.0 : 0.40;
-  alignmentSum += formalityMatch * 1.0;
-  featureWeights += 1.0;
-
-  // Check 5: Critical AI Identity Leak (immediate catastrophic failure)
+  // Critical AI Identity Leak (immediate catastrophic failure)
   if (/(作为AI|人工智能|语言模型|我很抱歉听到|希望对你有帮助|作为一个人工智能|作为语言模型)/i.test(candidate)) {
     issues.push('CRITICAL: AI identity leak detected');
     return round(0.05, 3);
   }
 
-  const baseBehavior = featureWeights > 0 ? alignmentSum / featureWeights : 0.80;
+  const contextStr = (context || []).map((c) => c.content).join(' ');
 
-  // Fine-tune with distilled behavior model priors if available
-  let modelAdjustment = 0;
-  if (behaviorModel?.conditional_style) {
-    const cs = behaviorModel.conditional_style;
-    if (isTeasing && cs.p_emoji_given_joking > 0.6) {
-      const candidateHasEmoji = /[\p{Extended_Pictographic}]/u.test(candidate);
-      if (!candidateHasEmoji) modelAdjustment -= 0.05;
+  // 1. Situation detection
+  const isTeasing = /(哈哈|233|逗你|开玩笑|笑死|好玩|逗比|lol|haha|调侃)/i.test(contextStr);
+  const isEmotional = /(难过|伤心|哭|委屈|抑郁|烦|累死|心碎|难受|惨|痛苦|好累)/i.test(contextStr);
+  const isInquiry = /(吗|呢|啥|什么|怎么|如何|为什么|在哪|多少|谁|\?|？)/i.test(contextStr);
+  const isFormal = /(请问|贵方|合作|报告|会议|祝好|您)/i.test(contextStr);
+
+  const targetBehav = extractBehaviorFeatures(target);
+  const candidateBehav = extractBehaviorFeatures(candidate);
+
+  // 2. Target <-> Candidate pairwise behavioral match (0.40)
+  let localAlign = 0;
+  let weights = 0;
+
+  if (isTeasing) {
+    const match = targetBehav.isPlayful === candidateBehav.isPlayful ? 1.0 : 0.35;
+    localAlign += match * 1.5;
+    weights += 1.5;
+    if (targetBehav.isPlayful && !candidateBehav.isPlayful) {
+      issues.push('lacks playful bantering response strategy');
     }
   }
 
-  return round(Math.min(1.0, Math.max(0.10, baseBehavior + modelAdjustment)), 3);
+  if (isEmotional) {
+    const match = targetBehav.isGentle === candidateBehav.isGentle ? 1.0 : 0.30;
+    localAlign += match * 1.5;
+    weights += 1.5;
+    if (targetBehav.isGentle && !candidateBehav.isGentle) {
+      issues.push('insufficient emotional acknowledgment');
+    }
+  }
+
+  const questionMatch = targetBehav.hasQuestionBack === candidateBehav.hasQuestionBack ? 1.0 : 0.65;
+  localAlign += questionMatch * 1.0;
+  weights += 1.0;
+
+  const formalityMatch = targetBehav.isFormal === candidateBehav.isFormal ? 1.0 : 0.45;
+  localAlign += formalityMatch * 1.0;
+  weights += 1.0;
+
+  const brevityMatch = targetBehav.isBrief === candidateBehav.isBrief ? 1.0 : 0.60;
+  localAlign += brevityMatch * 0.8;
+  weights += 0.8;
+
+  const targetCandidateMatch = weights > 0 ? localAlign / weights : 0.80;
+
+  // 3. Candidate <-> Distilled Behavior Model match (0.40)
+  let candidateModelMatch = targetCandidateMatch;
+  if (behaviorModel?.response_policies && Array.isArray(behaviorModel.response_policies)) {
+    const matchingPolicy = behaviorModel.response_policies.find((p) => {
+      if (isTeasing && p.situation === 'joking') return true;
+      if (isEmotional && (p.situation === 'venting' || p.situation === 'emotional')) return true;
+      if (isInquiry && (p.situation === 'inquiry' || p.situation === 'question')) return true;
+      return false;
+    });
+
+    if (matchingPolicy?.statistical) {
+      const stats = matchingPolicy.statistical;
+      let policyScore = 0;
+      let pCount = 0;
+
+      if (typeof stats.emoji_probability === 'number') {
+        const hasEmoji = /[\p{Extended_Pictographic}]/u.test(candidate);
+        policyScore += 1.0 - Math.abs((hasEmoji ? 1.0 : 0.0) - stats.emoji_probability);
+        pCount++;
+      }
+      if (typeof stats.short_reply_probability === 'number') {
+        policyScore += 1.0 - Math.abs((candidateBehav.isBrief ? 1.0 : 0.0) - stats.short_reply_probability);
+        pCount++;
+      }
+      if (typeof stats.follow_up_probability === 'number') {
+        policyScore += 1.0 - Math.abs((candidateBehav.hasQuestionBack ? 1.0 : 0.0) - stats.follow_up_probability);
+        pCount++;
+      }
+
+      if (pCount > 0) {
+        candidateModelMatch = policyScore / pCount;
+      }
+    }
+  } else if (behaviorModel?.conditional_style) {
+    const cs = behaviorModel.conditional_style;
+    if (isTeasing && cs.p_emoji_given_joking) {
+      const hasEmoji = /[\p{Extended_Pictographic}]/u.test(candidate);
+      candidateModelMatch = 1.0 - Math.abs((hasEmoji ? 1.0 : 0.0) - cs.p_emoji_given_joking);
+    }
+  }
+
+  // 4. Context-Policy Alignment (0.20)
+  let contextAlignment = 0.80;
+  if (isEmotional) {
+    contextAlignment = candidateBehav.isGentle ? 1.0 : 0.40;
+  } else if (isTeasing) {
+    contextAlignment = candidateBehav.isPlayful ? 1.0 : 0.50;
+  } else if (isFormal) {
+    contextAlignment = candidateBehav.isFormal ? 1.0 : 0.50;
+  } else if (isInquiry) {
+    contextAlignment = (candidateBehav.hasQuestionBack || candidate.length >= 6) ? 0.90 : 0.60;
+  }
+
+  const behavior = round(
+    0.40 * targetCandidateMatch +
+    0.40 * candidateModelMatch +
+    0.20 * contextAlignment,
+    3
+  );
+
+  return Math.min(1.0, Math.max(0.10, behavior));
 }
 
 /**
  * Dimension C: Contextual Consistency
- * Verifies fact accuracy, timeline consistency, and entity grounding.
+ * Grounding verification against World Model entities, facts, and conversation context.
+ * Returns null if no verifiable entities, facts, or context exist (avoids fake 0.95 scores).
  */
 function calculateContextScore(context, originalTarget, candidate, worldModel, issues) {
-  let score = 0.95;
-
-  if (!worldModel) return round(score, 3);
+  if (originalTarget === candidate) return 1.0;
 
   const candidateLower = candidate.toLowerCase();
+  const contextStr = (context || []).map((c) => c.content).join(' ');
+
+  let hasVerifiableItems = false;
+  let groundingScore = 0.85; // baseline for coherent in-context response
 
   // 1. Entity Grounding & Contradiction Detection
-  if (Array.isArray(worldModel.entities)) {
+  if (worldModel?.entities && Array.isArray(worldModel.entities) && worldModel.entities.length > 0) {
     for (const ent of worldModel.entities) {
       if (!ent.name) continue;
       const entName = ent.name.toLowerCase();
-      if (candidateLower.includes(entName)) {
-        // Bonus for grounding correctly
-        score = Math.min(1.0, score + 0.02);
+      const inContextOrTarget = contextStr.toLowerCase().includes(entName) || originalTarget.toLowerCase().includes(entName);
 
-        // Check against known entity contradictions or wrong attributes
-        if (Array.isArray(ent.contradictions)) {
-          for (const contra of ent.contradictions) {
-            if (candidateLower.includes(contra.toLowerCase())) {
-              issues.push(`entity contradiction: "${ent.name}" with "${contra}"`);
-              score -= 0.15;
+      if (inContextOrTarget || candidateLower.includes(entName)) {
+        hasVerifiableItems = true;
+
+        if (candidateLower.includes(entName)) {
+          // Bonus for grounding correctly
+          groundingScore = Math.min(1.0, groundingScore + 0.05);
+
+          // Check against known entity contradictions
+          if (Array.isArray(ent.contradictions)) {
+            for (const contra of ent.contradictions) {
+              if (candidateLower.includes(contra.toLowerCase())) {
+                issues.push(`entity contradiction: "${ent.name}" with "${contra}"`);
+                groundingScore -= 0.25;
+              }
             }
           }
         }
@@ -258,19 +366,54 @@ function calculateContextScore(context, originalTarget, candidate, worldModel, i
     }
   }
 
-  // 2. Fact Grounding
-  if (Array.isArray(worldModel.facts)) {
+  // 2. Fact Grounding & Negation Contradiction
+  if (worldModel?.facts && Array.isArray(worldModel.facts) && worldModel.facts.length > 0) {
     for (const fact of worldModel.facts) {
       if (!fact.key || !fact.value) continue;
-      // If fact is negated (e.g. "dislikes coriander") but candidate enthusiastically affirms it
-      if (fact.negated && candidateLower.includes(fact.value.toLowerCase())) {
-        issues.push(`fact contradiction: "${fact.key}" asserted when negated`);
-        score -= 0.12;
+      const valLower = fact.value.toLowerCase();
+      const inContextOrTarget = contextStr.toLowerCase().includes(valLower) || originalTarget.toLowerCase().includes(valLower);
+
+      if (inContextOrTarget || candidateLower.includes(valLower)) {
+        hasVerifiableItems = true;
+
+        if (candidateLower.includes(valLower)) {
+          groundingScore = Math.min(1.0, groundingScore + 0.05);
+        }
+
+        if (fact.negated && candidateLower.includes(valLower)) {
+          issues.push(`fact contradiction: "${fact.key}" asserted when negated`);
+          groundingScore -= 0.25;
+        }
       }
     }
   }
 
-  return round(Math.min(1.0, Math.max(0.10, score)), 3);
+  // 3. Dialogue Context Coherence
+  if (context && context.length > 0) {
+    hasVerifiableItems = true;
+    const lastMsg = context[context.length - 1]?.content || '';
+    const lastMsgTokens = tokenize(lastMsg);
+    const candTokens = new Set(tokenize(candidate));
+
+    let overlap = 0;
+    for (const t of lastMsgTokens) {
+      if (candTokens.has(t)) overlap++;
+    }
+
+    // Coherence check: if user asked a question, did candidate give an empty or completely disconnected response?
+    const isQuestion = /[?？]/.test(lastMsg) || /(吗|呢|啥|什么|怎么|如何|为什么|在哪)/.test(lastMsg);
+    if (isQuestion && candidate.length < 2) {
+      groundingScore -= 0.20;
+      issues.push('evasive or empty response to direct inquiry');
+    }
+  }
+
+  // If no verifiable entities, facts, or context exists, this sample is not evaluable for C
+  if (!hasVerifiableItems) {
+    return null;
+  }
+
+  return round(Math.min(1.0, Math.max(0.10, groundingScore)), 3);
 }
 
 // ─── Deterministic Metric Helpers ─────────────────────────────────────────────
@@ -327,6 +470,7 @@ function extractStyleFeatures(text) {
     hasEllipsis: /\.{2,}|…{1,}|……/.test(safeText),
     hasQuestion: /[?？]/.test(safeText),
     hasExclamation: /[!！]/.test(safeText),
+    hasTilde: /[~～]/.test(safeText),
     cleanTerminal: !/[。！？!?.~～…]$/.test(safeText.trim()),
     lengthBucketIdx,
     hasRepetition: /([\u4e00-\u9fa5a-z])\1{2,}/i.test(safeText),
@@ -336,10 +480,11 @@ function extractStyleFeatures(text) {
 function extractBehaviorFeatures(text) {
   const safeText = typeof text === 'string' ? text : '';
   return {
-    isPlayful: /(哈哈|哼|才不|明明|你才是|略略略|好呀|偏不|笑死|好玩|诶嘿)/i.test(safeText),
-    isGentle: /(抱抱|摸摸|辛苦啦|别难过|没事|我在|慢慢来|乖|好啦)/i.test(safeText),
+    isPlayful: /(哈哈|哼|才不|明明|你才是|略略略|好呀|偏不|笑死|好玩|诶嘿|233)/i.test(safeText),
+    isGentle: /(抱抱|摸摸|辛苦啦|别难过|没事|我在|慢慢来|乖|好啦|别急|休息)/i.test(safeText),
     hasQuestionBack: /[?？]/.test(safeText),
     isFormal: /(您|您好|请问|不知道是否|非常抱歉|很高兴为您|祝您)/i.test(safeText),
+    isBrief: safeText.length <= 15,
   };
 }
 

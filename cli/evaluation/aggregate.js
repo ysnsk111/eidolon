@@ -22,30 +22,39 @@ export function aggregateEvaluationResults({
 
   // Calculate means for the 5 core dimensions
   let sumL = 0, sumS = 0, sumB = 0, sumC = 0, sumH = 0;
+  let countC = 0;
   const failureCases = [];
 
   for (const s of sampleResults) {
     sumL += s.metrics.lexical;
     sumS += s.metrics.style;
     sumB += s.metrics.behavior;
-    sumC += s.metrics.context;
+    const hasC = typeof s.metrics.context === 'number' && s.metrics.context !== null;
+    if (hasC) {
+      sumC += s.metrics.context;
+      countC++;
+    }
     sumH += s.judge.score;
 
-    const sampleDsi =
-      s.metrics.lexical * 0.20 +
-      s.metrics.style * 0.20 +
-      s.metrics.behavior * 0.25 +
-      s.metrics.context * 0.15 +
-      s.judge.score * 0.20;
+    const sampleDsi = hasC
+      ? s.metrics.lexical * 0.20 +
+        s.metrics.style * 0.20 +
+        s.metrics.behavior * 0.25 +
+        s.metrics.context * 0.15 +
+        s.judge.score * 0.20
+      : (s.metrics.lexical * 0.20 +
+         s.metrics.style * 0.20 +
+         s.metrics.behavior * 0.25 +
+         s.judge.score * 0.20) / 0.85;
 
     // A failure case is any sample with score below 0.75 or containing detected issues
-    if (sampleDsi < 0.78 || s.metrics.issues.length > 0) {
+    if (sampleDsi < 0.78 || (s.metrics.issues && s.metrics.issues.length > 0)) {
       failureCases.push({
         sample_id: s.sample_id,
-        context: s.context.map((c) => `${c.sender}: ${c.content}`),
+        context: (s.context || []).map((c) => `${c.sender}: ${c.content}`),
         original_target: s.original_target,
         generated_candidate: s.generated_candidate,
-        issues: s.metrics.issues.length > 0 ? s.metrics.issues : ['sub-threshold behavioral match'],
+        issues: (s.metrics.issues && s.metrics.issues.length > 0) ? s.metrics.issues : ['sub-threshold behavioral match'],
         score: round(sampleDsi, 3),
       });
     }
@@ -54,18 +63,26 @@ export function aggregateEvaluationResults({
   const avgL = round(sumL / n, 3);
   const avgS = round(sumS / n, 3);
   const avgB = round(sumB / n, 3);
-  const avgC = round(sumC / n, 3);
+  const avgC = countC > 0 ? round(sumC / countC, 3) : null;
   const avgH = round(sumH / n, 3);
 
   // Core DSI Formula
-  const dsi = round(
-    avgL * 0.20 +
-    avgS * 0.20 +
-    avgB * 0.25 +
-    avgC * 0.15 +
-    avgH * 0.20,
-    3
-  );
+  const dsi = avgC !== null
+    ? round(
+        avgL * 0.20 +
+        avgS * 0.20 +
+        avgB * 0.25 +
+        avgC * 0.15 +
+        avgH * 0.20,
+        3
+      )
+    : round(
+        (avgL * 0.20 +
+         avgS * 0.20 +
+         avgB * 0.25 +
+         avgH * 0.20) / 0.85,
+        3
+      );
 
   // Acceptance Gate
   const gateResults = {
@@ -73,14 +90,14 @@ export function aggregateEvaluationResults({
     lexical_pass: avgL >= qualityGate.lexicalThreshold,
     style_pass: avgS >= qualityGate.styleThreshold,
     behavior_pass: avgB >= qualityGate.behaviorThreshold,
-    context_pass: avgC >= qualityGate.contextThreshold,
+    context_pass: avgC !== null ? avgC >= qualityGate.contextThreshold : true,
   };
 
   const allPassed = Object.values(gateResults).every(Boolean);
   const status = allPassed ? 'PASS' : dsi >= 0.75 ? 'NEEDS_OPTIMIZATION' : 'FAIL';
 
   return {
-    version: '1.0.0',
+    version: '1.1.0',
     persona_id: personaId,
     created_at: new Date().toISOString(),
     dataset_size: n,
@@ -113,7 +130,7 @@ function round(val, dec = 3) {
 
 function getDefaultReport(personaId) {
   return {
-    version: '1.0.0',
+    version: '1.1.0',
     persona_id: personaId || 'unknown',
     created_at: new Date().toISOString(),
     dataset_size: 0,

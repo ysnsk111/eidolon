@@ -10,12 +10,13 @@ const CONFIG_DIR = path.join(os.homedir(), '.config', 'eidolon');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 export const DEFAULT_CONFIG = {
-  version: '1.0.0',
+  version: '1.1.0',
   llm: {
     baseUrl: process.env.EIDOLON_LLM_BASE_URL || 'http://localhost:8083/v1',
-    apiKey: process.env.EIDOLON_LLM_API_KEY || 'sk-oc2oai-017d49ffb8309de5673932058071ce95',
+    apiKey: process.env.EIDOLON_LLM_API_KEY || '',
     model: process.env.EIDOLON_LLM_MODEL || 'opencode/nemotron-3.5-lightning-free',
-    judgeModel: process.env.EIDOLON_LLM_JUDGE_MODEL || 'opencode/nemotron-3.5-lightning-free',
+    criticModel: process.env.EIDOLON_LLM_CRITIC_MODEL || 'opencode/critic-model',
+    judgeModel: process.env.EIDOLON_LLM_JUDGE_MODEL || 'opencode/judge-model',
     temperature: 0.7,
     maxTokens: 2048,
     timeoutMs: 60000,

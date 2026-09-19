@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -51,127 +52,179 @@ func (e *Engine) AddWorkingMessage(sessionID string, msg storage.MessageItem) {
 		turns = turns[len(turns)-10:]
 	}
 	e.workingMemory[sessionID] = turns
-
-	_ = e.store.SaveMemory(storage.MemoryItem{
-		ID:              fmt.Sprintf("l0_%s_%d", sessionID, time.Now().UnixNano()),
-		PersonaID:       msg.PersonaID,
-		Layer:           "L0",
-		Category:        "working_turn",
-		Key:             msg.Sender,
-		Value:           msg.Content,
-		ImportanceScore: 0.50,
-		ValidFrom:       msg.Timestamp,
-		Confidence:      1.0,
-	})
 }
 
-// ExtractAndSaveMemoryPipeline executes the memory extraction pipeline.
-//
-// Architecture (P0-5 fix):
-//  Step 1 - Candidate Extraction: attempt LLM extraction; fall back to heuristic candidates.
-//  Step 2 - Normalization: canonicalize key names.
-//  Step 3 - Conflict Resolution: version superseded facts with ValidTo timestamps.
-//
-// Heuristic extraction is preserved as a lightweight fallback but is clearly labeled
-// as such. It no longer silently masquerades as LLM-quality extraction.
-func (e *Engine) ExtractAndSaveMemoryPipeline(personaID, sessionID, userMsg, botReply string) {
+// LLMExtractor represents an abstraction for LLM candidate extraction.
+type LLMExtractor func(prompt string) (string, error)
+
+// ExtractMemoryDeltas executes memory candidate extraction (attempting LLM, falling back to heuristic),
+// performs normalization, and resolves conflicts by marking superseded facts with ValidTo.
+// P0 Fix (Section 9, 10, 12): Returns all memory delta records (superseded updates + new inserts)
+// so they can be committed atomically in CommitInteraction.
+func (e *Engine) ExtractMemoryDeltas(personaID, sessionID, userMsg, botReply string, llmExtractor LLMExtractor) []storage.MemoryItem {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-
-	// --- Step 1: Heuristic Candidate Extraction (fallback only) ---
-	// These are lightweight candidates, not authoritative facts.
-	// For full extraction quality, call an LLM extraction agent separately.
-	candidates := e.heuristicCandidateExtraction(userMsg, now)
-
-	// --- Step 2 + 3: Normalize and resolve conflicts for each candidate ---
-	for _, candidate := range candidates {
-		normalizedKey := normalizeMemoryKey(candidate.Category, candidate.Key)
-		e.resolveAndSaveFact(personaID, candidate.Category, normalizedKey, candidate.Value, candidate.ImportanceScore, candidate.Confidence, now)
-	}
-}
-
-// heuristicCandidateExtraction performs lightweight pattern-based candidate detection.
-// These are signals only; confidence is explicitly low to reflect extraction uncertainty.
-func (e *Engine) heuristicCandidateExtraction(userMsg string, now string) []storage.MemoryItem {
-	lower := strings.ToLower(userMsg)
 	var candidates []storage.MemoryItem
 
-	// Preference signals
-	if strings.Contains(lower, "喜欢") || strings.Contains(lower, "爱吃") || strings.Contains(lower, "讨厌") {
-		candidates = append(candidates, storage.MemoryItem{
-			Category:        "user_preference",
-			Key:             "preference_signal",
-			Value:           userMsg,
-			ImportanceScore: 0.55, // Lowered: heuristic, not verified
-			Confidence:      0.40, // Explicitly low: keyword match only
-			ValidFrom:       now,
-		})
-	}
-
-	// Milestone/event signals
-	if strings.Contains(lower, "考试") || strings.Contains(lower, "毕业") || strings.Contains(lower, "生日") || strings.Contains(lower, "生病") {
-		candidates = append(candidates, storage.MemoryItem{
-			Category:        "milestone_event",
-			Key:             "event_signal",
-			Value:           userMsg,
-			ImportanceScore: 0.70, // Higher: milestones are more salient
-			Confidence:      0.50, // Still heuristic
-			ValidFrom:       now,
-		})
-	}
-
-	return candidates
-}
-
-// normalizeMemoryKey produces a canonical key from category + raw key.
-// This is Step 2 (Normalization) of the memory pipeline.
-// Example: multiple phrasings of "favorite food" map to the same key.
-func normalizeMemoryKey(category, rawKey string) string {
-	// Canonical form: lowercase category + normalized raw key
-	return strings.ToLower(strings.TrimSpace(category)) + ":" + strings.ToLower(strings.TrimSpace(rawKey))
-}
-
-// Calculate 6-factor importance score.
-// Score = Imp*0.30 + Rec*0.15 + Freq*0.15 + RelImpact*0.15 + FutureRel*0.15 + Conf*0.10
-func (e *Engine) calculateScore(importance, recency float64, frequency int, relImpact, futureRel, confidence float64) float64 {
-	freqFactor := math.Min(1.0, float64(frequency)*0.20)
-	score := importance*0.30 +
-		recency*0.15 +
-		freqFactor*0.15 +
-		relImpact*0.15 +
-		futureRel*0.15 +
-		confidence*0.10
-	return math.Round(score*1000) / 1000
-}
-
-// resolveAndSaveFact implements Step 3 (Conflict Resolution) with temporal versioning.
-// It marks superseded facts with ValidTo before inserting the new active version.
-func (e *Engine) resolveAndSaveFact(personaID, category, normalizedKey, factValue string, importance, confidence float64, now string) {
-	existing := e.store.QueryMemories(personaID, "L2")
-
-	for _, oldMem := range existing {
-		if oldMem.Key == normalizedKey && oldMem.ValidTo == nil {
-			// Mark previous version as superseded (temporal versioning)
-			oldMem.ValidTo = &now
-			_ = e.store.SaveMemory(oldMem)
+	// Step 1: Candidate Extraction (LLM first, then heuristic fallback)
+	if llmExtractor != nil {
+		llmPrompt := fmt.Sprintf("Extract facts, user preferences, and milestone events from this turn.\nUser: %s\nPersona: %s", userMsg, botReply)
+		if rawJson, err := llmExtractor(llmPrompt); err == nil {
+			candidates = parseLLMExtractionJSON(rawJson, now)
 		}
 	}
 
-	_ = e.store.SaveMemory(storage.MemoryItem{
-		ID:              fmt.Sprintf("l2_%d", time.Now().UnixNano()),
-		PersonaID:       personaID,
-		Layer:           "L2",
-		Category:        category,
-		Key:             normalizedKey,
-		Value:           factValue,
-		ImportanceScore: importance,
-		ValidFrom:       now,
-		ValidTo:         nil,
-		Confidence:      confidence,
-	})
+	if len(candidates) == 0 {
+		candidates = e.heuristicCandidateExtraction(userMsg, now)
+	}
+
+	// Step 2 + 3: Normalization & Conflict Resolution with temporal versioning
+	var deltas []storage.MemoryItem
+	existing := e.store.QueryMemories(personaID, "L2")
+
+	for _, candidate := range candidates {
+		normalizedKey := normalizeMemoryKey(candidate.Category, candidate.Key)
+
+		// Check for existing active memory with matching key to supersede
+		for _, oldMem := range existing {
+			if oldMem.Key == normalizedKey && oldMem.ValidTo == nil {
+				// Mark superseded
+				superseded := oldMem
+				superseded.ValidTo = &now
+				deltas = append(deltas, superseded)
+			}
+		}
+
+		// New active version
+		newMem := storage.MemoryItem{
+			ID:              fmt.Sprintf("l2_%d_%d", time.Now().UnixNano(), len(deltas)+1),
+			PersonaID:       personaID,
+			Layer:           "L2",
+			Category:        candidate.Category,
+			Key:             normalizedKey,
+			Value:           candidate.Value,
+			ImportanceScore: candidate.ImportanceScore,
+			ValidFrom:       now,
+			ValidTo:         nil,
+			Confidence:      candidate.Confidence,
+			CreatedAt:       now,
+		}
+		deltas = append(deltas, newMem)
+	}
+
+	return deltas
 }
+
+// ExtractAndSaveMemoryPipeline executes the memory extraction pipeline and saves deltas.
+func (e *Engine) ExtractAndSaveMemoryPipeline(personaID, sessionID, userMsg, botReply string) {
+	deltas := e.ExtractMemoryDeltas(personaID, sessionID, userMsg, botReply, nil)
+	for _, m := range deltas {
+		_ = e.store.SaveMemory(m)
+	}
+}
+
+func parseLLMExtractionJSON(raw string, now string) []storage.MemoryItem {
+	var parsed struct {
+		Memories []struct {
+			Category   string  `json:"category"`
+			Key        string  `json:"key"`
+			Value      string  `json:"value"`
+			Importance float64 `json:"importance_score"`
+			Confidence float64 `json:"confidence"`
+		} `json:"memories"`
+	}
+	clean := strings.TrimSpace(raw)
+	firstBrace := strings.Index(clean, "{")
+	lastBrace := strings.LastIndex(clean, "}")
+	if firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace {
+		clean = clean[firstBrace : lastBrace+1]
+	}
+	if err := json.Unmarshal([]byte(clean), &parsed); err == nil && len(parsed.Memories) > 0 {
+		var items []storage.MemoryItem
+		for _, m := range parsed.Memories {
+			if m.Key != "" && m.Value != "" {
+				imp := m.Importance
+				if imp <= 0 {
+					imp = 0.70
+				}
+				conf := m.Confidence
+				if conf <= 0 {
+					conf = 0.85
+				}
+				items = append(items, storage.MemoryItem{
+					Category:        m.Category,
+					Key:             m.Key,
+					Value:           m.Value,
+					ImportanceScore: imp,
+					Confidence:      conf,
+					ValidFrom:       now,
+				})
+			}
+		}
+		return items
+	}
+	return nil
+}
+
+func normalizeMemoryKey(category, key string) string {
+	cleanKey := strings.TrimSpace(strings.ToLower(key))
+	cleanCat := strings.TrimSpace(strings.ToLower(category))
+	cleanKey = strings.ReplaceAll(cleanKey, " ", "_")
+	if cleanCat != "" && !strings.HasPrefix(cleanKey, cleanCat) {
+		return fmt.Sprintf("%s:%s", cleanCat, cleanKey)
+	}
+	return cleanKey
+}
+
+func (e *Engine) heuristicCandidateExtraction(userMsg, now string) []storage.MemoryItem {
+	var items []storage.MemoryItem
+	clean := strings.TrimSpace(userMsg)
+	if clean == "" {
+		return items
+	}
+
+	patterns := []struct {
+		prefix   string
+		category string
+		key      string
+	}{
+		{"最喜欢", "preference", "favorite"},
+		{"喜欢", "preference", "likes"},
+		{"讨厌", "preference", "dislikes"},
+		{"我住在", "profile", "location"},
+		{"在", "profile", "location"},
+		{"我是", "profile", "identity"},
+		{"我叫", "profile", "name"},
+	}
+
+	for _, p := range patterns {
+		if idx := strings.Index(clean, p.prefix); idx != -1 {
+			val := strings.TrimSpace(clean[idx+len(p.prefix):])
+			for _, sep := range []string{"，", ",", "。", "！", "!", "~", "\n"} {
+				if cut := strings.Index(val, sep); cut != -1 {
+					val = val[:cut]
+				}
+			}
+			val = strings.TrimSpace(val)
+			if len(val) >= 2 && len(val) <= 50 {
+				items = append(items, storage.MemoryItem{
+					Category:        p.category,
+					Key:             p.key,
+					Value:           fmt.Sprintf("%s %s", p.prefix, val),
+					ImportanceScore: 0.65,
+					Confidence:      0.80,
+					ValidFrom:       now,
+				})
+				break
+			}
+		}
+	}
+
+	return items
+}
+
 
 // RetrieveContext retrieves context-relevant memories using relevance-aware scoring.
 //

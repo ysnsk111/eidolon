@@ -1,4 +1,4 @@
-# EIDOLON v1.0
+# EIDOLON v1.1.0
 
 <p align="center">
   <strong>Persona Distillation & Memory Runtime</strong><br>

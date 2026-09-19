@@ -30,77 +30,58 @@ export async function executeBlindPairwiseJudge({
   const candidateA = isTargetA ? originalTarget : generatedCandidate;
   const candidateB = isTargetA ? generatedCandidate : originalTarget;
 
-  if (llmProvider) {
+  if (llmProvider && typeof llmProvider.judge === 'function') {
     try {
-      const contextStr = context.map((c) => `${c.sender}: ${c.content}`).join('\n');
-      const prompt = `[EIDOLON INDEPENDENT BLIND JUDGE]
-You are an independent evaluator analyzing two response candidates for conversational naturalness, persona fidelity, and contextual fit.
-You do NOT know which candidate is authentic human history and which is generated.
-
-CONVERSATION CONTEXT:
-${contextStr}
-
-CANDIDATE A:
-${candidateA}
-
-CANDIDATE B:
-${candidateB}
-
-Evaluate both candidates and return strictly valid JSON matching this schema:
-{
-  "winner": "A" | "B" | "TIE",
-  "confidence": number (0.0 to 1.0),
-  "style_similarity": number (0.0 to 1.0),
-  "behavior_similarity": number (0.0 to 1.0),
-  "context_similarity": number (0.0 to 1.0),
-  "reason_codes": ["message_length_mismatch" | "emoji_overuse" | "tone_mismatch" | "natural_dialogue" | "good_rhythm"],
-  "rationale": "concise explanation"
-}`;
-
-      const raw = await llmProvider.complete(prompt, {
-        temperature: 0.1,
-        maxTokens: 350,
-        modelOverride: judgeModel || 'independent-judge',
+      const parsed = await llmProvider.judge(context, candidateA, candidateB, {
+        judgeModel: judgeModel || llmProvider.judgeModel,
       });
 
-      const parsed = JSON.parse(raw.trim());
+      if (parsed && typeof parsed === 'object') {
+        const styleSim = typeof parsed.style_similarity === 'number' ? parsed.style_similarity : null;
+        const behavSim = typeof parsed.behavior_similarity === 'number' ? parsed.behavior_similarity : null;
+        const ctxSim = typeof parsed.context_similarity === 'number' ? parsed.context_similarity : null;
 
-      const favoredGenerated =
-        (isTargetA && parsed.winner === 'B') ||
-        (!isTargetA && parsed.winner === 'A') ||
-        parsed.winner === 'TIE';
+        if (styleSim !== null && behavSim !== null && ctxSim !== null) {
+          const favoredGenerated =
+            (isTargetA && parsed.winner === 'B') ||
+            (!isTargetA && parsed.winner === 'A') ||
+            parsed.winner === 'TIE';
 
-      const compositeScore = round(
-        (parsed.style_similarity || 0.8) * 0.40 +
-        (parsed.behavior_similarity || 0.8) * 0.35 +
-        (parsed.context_similarity || 0.8) * 0.25,
-        3
-      );
+          const compositeScore = round(
+            styleSim * 0.40 +
+            behavSim * 0.35 +
+            ctxSim * 0.25,
+            3
+          );
 
-      return {
-        blind_winner: parsed.winner,
-        synthetic_is_winner_or_tie: favoredGenerated,
-        confidence: parsed.confidence || 0.80,
-        score: compositeScore,
-        dimension_scores: {
-          style_similarity: parsed.style_similarity || 0.80,
-          behavior_similarity: parsed.behavior_similarity || 0.80,
-          context_similarity: parsed.context_similarity || 0.80,
-        },
-        reason_codes: parsed.reason_codes || ['completed_blind_evaluation'],
-        reason: parsed.rationale || 'Independent blind LLM judge evaluation completed',
-        judge_metadata: {
-          blind: true,
-          shuffled: true,
-          target_position: isTargetA ? 'A' : 'B',
-        },
-      };
+          return {
+            blind_winner: parsed.winner || 'TIE',
+            synthetic_is_winner_or_tie: favoredGenerated,
+            confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.80,
+            score: compositeScore,
+            dimension_scores: {
+              style_similarity: styleSim,
+              behavior_similarity: behavSim,
+              context_similarity: ctxSim,
+            },
+            reason_codes: Array.isArray(parsed.reason_codes) ? parsed.reason_codes : ['completed_blind_evaluation'],
+            reason: parsed.rationale || parsed.reason || 'Independent blind LLM judge evaluation completed',
+            judge_metadata: {
+              blind: true,
+              shuffled: true,
+              target_position: isTargetA ? 'A' : 'B',
+              mode: 'llm_judge',
+              judge_model: parsed.judge_model || judgeModel || llmProvider.judgeModel,
+            },
+          };
+        }
+      }
     } catch (_) {
       // Fall through to deterministic heuristic blind judge
     }
   }
 
-  // Deterministic Heuristic Blind Judge (when no LLM judge is configured)
+  // Deterministic Heuristic Blind Judge (when no LLM judge is configured or LLM fails)
   const lenRatio =
     Math.min(generatedCandidate.length, originalTarget.length) /
     Math.max(generatedCandidate.length, originalTarget.length);
@@ -114,24 +95,27 @@ Evaluate both candidates and return strictly valid JSON matching this schema:
   const candEmojis = (generatedCandidate.match(emojiRegex) || []).length;
   if (Math.abs(targetEmojis - candEmojis) > 2) reasonCodes.push('emoji_overuse');
 
-  const score = round(Math.min(0.95, Math.max(0.50, 0.65 + lenRatio * 0.25)), 3);
+  const score = round(Math.min(0.95, Math.max(0.40, 0.55 + lenRatio * 0.35)), 3);
+  const favoredGenerated = lenRatio >= 0.70;
+  const winner = lenRatio >= 0.85 ? 'TIE' : (isTargetA ? 'A' : 'B');
 
   return {
-    blind_winner: isTargetA ? (lenRatio > 0.7 ? 'TIE' : 'A') : (lenRatio > 0.7 ? 'TIE' : 'B'),
-    synthetic_is_winner_or_tie: lenRatio >= 0.70,
-    confidence: 0.75,
+    blind_winner: winner,
+    synthetic_is_winner_or_tie: favoredGenerated,
+    confidence: 0.70,
     score,
     dimension_scores: {
       style_similarity: score,
-      behavior_similarity: round(score * 0.98, 3),
-      context_similarity: round(score * 1.01, 3),
+      behavior_similarity: round(score * 0.95, 3),
+      context_similarity: round(score * 0.98, 3),
     },
     reason_codes: reasonCodes.length > 0 ? reasonCodes : ['natural_dialogue_heuristic'],
-    reason: 'Deterministic heuristic blind judgment applied',
+    reason: 'Deterministic heuristic blind judgment applied (no LLM judge configured or LLM unavailable)',
     judge_metadata: {
       blind: true,
       shuffled: true,
       target_position: isTargetA ? 'A' : 'B',
+      mode: 'heuristic_judge',
       heuristic_fallback: true,
     },
   };

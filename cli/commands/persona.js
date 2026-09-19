@@ -1,11 +1,13 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import yauzl from 'yauzl';
 import Table from 'cli-table3';
 import { loadConfig, updateConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { formatScore } from '../utils/format.js';
+import { validatePackage } from './validate.js';
 import pc from 'picocolors';
 
 export async function personaCommand(action, target, options) {
@@ -85,11 +87,70 @@ export async function personaCommand(action, target, options) {
         logger.error('Usage: eidolon persona install <file.eidolon>');
         process.exit(1);
       }
-      logger.info(`Installing persona bundle from ${target}...`);
-      // Unpack bundle to completed_result
-      const outDir = path.join(process.cwd(), 'completed_result', path.basename(target, '.eidolon'));
-      fs.mkdirSync(outDir, { recursive: true });
-      logger.success(`Installed persona to ${outDir}`);
+      const bundlePath = path.resolve(target);
+      if (!fs.existsSync(bundlePath)) {
+        logger.error(`Persona bundle not found: ${bundlePath}`);
+        process.exit(1);
+      }
+
+      logger.info(`Installing persona bundle from ${path.basename(bundlePath)}...`);
+      const tmpDir = path.join(os.tmpdir(), `eidolon_install_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      try {
+        await extractZipBundle(bundlePath, tmpDir);
+
+        // Run AJV validation on unpacked package
+        const valResult = await validatePackage(tmpDir);
+        if (!valResult.valid) {
+          logger.error('Persona bundle validation failed:');
+          for (const err of valResult.errors) {
+            logger.error(`  ✖ ${err}`);
+          }
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          process.exit(1);
+        }
+
+        const manifestPath = path.join(tmpDir, 'manifest.json');
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        const personaId = manifest.persona_id;
+        const packageName = manifest.package_name || path.basename(bundlePath, '.eidolon');
+
+        const resultDir = path.join(process.cwd(), 'completed_result');
+        if (!fs.existsSync(resultDir)) {
+          fs.mkdirSync(resultDir, { recursive: true });
+        }
+        const destDir = path.join(resultDir, personaId);
+        if (fs.existsSync(destDir)) {
+          fs.rmSync(destDir, { recursive: true, force: true });
+        }
+        fs.renameSync(tmpDir, destDir);
+
+        // Register in SQLite
+        const stmt = db.prepare(`
+          INSERT OR REPLACE INTO personas (
+            id, name, target_speaker, created_at, dsi_score, is_active, manifest_json, package_path
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        stmt.run(
+          personaId,
+          packageName,
+          manifest.target_speaker || 'Target',
+          manifest.created_at || new Date().toISOString(),
+          typeof manifest.dsi_score === 'number' ? manifest.dsi_score : null,
+          config.activePersona === personaId ? 1 : 0,
+          JSON.stringify(manifest),
+          destDir
+        );
+
+        logger.success(`Installed and registered persona: ${pc.bold(packageName)} (${personaId})`);
+        logger.info(`Destination: ${destDir}`);
+      } catch (err) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        logger.error(`Failed to install persona: ${err.message}`);
+        process.exit(1);
+      }
       break;
     }
 
@@ -126,4 +187,35 @@ export async function personaCommand(action, target, options) {
   }
 
   db.close();
+}
+
+function extractZipBundle(zipPath, destDir) {
+  return new Promise((resolve, reject) => {
+    yauzl.open(zipPath, { lazyEntries: true }, (err, zipfile) => {
+      if (err) return reject(err);
+
+      zipfile.readEntry();
+      zipfile.on('entry', (entry) => {
+        const destPath = path.join(destDir, entry.fileName);
+        if (/\/$/.test(entry.fileName)) {
+          fs.mkdirSync(destPath, { recursive: true });
+          zipfile.readEntry();
+        } else {
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          zipfile.openReadStream(entry, (streamErr, readStream) => {
+            if (streamErr) return reject(streamErr);
+            const writeStream = fs.createWriteStream(destPath);
+            readStream.pipe(writeStream);
+            writeStream.on('finish', () => {
+              zipfile.readEntry();
+            });
+            writeStream.on('error', reject);
+          });
+        }
+      });
+
+      zipfile.on('end', () => resolve());
+      zipfile.on('error', reject);
+    });
+  });
 }

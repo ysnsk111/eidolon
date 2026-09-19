@@ -63,37 +63,34 @@ export async function runEvaluation({
     });
   }
 
-  // If no blind test samples were available (e.g. tiny input chat), synthesize evaluation calibration sample
+  // Section 8 Fix: If blind test set is empty, return INSUFFICIENT_DATA; never fabricate calibration samples into DSI.
   if (sampleResults.length === 0) {
-    const fallbackContext = [{ sender: 'User', content: '在干嘛呢？' }];
-    const fallbackTarget = (languageModel.openers && languageModel.openers.length > 0 ? languageModel.openers[0] : null) || '没干嘛，在听歌~';
-    const fallbackCandidate = '没干嘛呀，发呆呢~';
-
-    const metrics = calculateSampleMetrics({
-      originalTarget: fallbackTarget,
-      generatedCandidate: fallbackCandidate,
-      context: fallbackContext,
-      languageModel,
-      styleModel,
-      behaviorModel,
-      worldModel,
-    });
-
-    const judge = await executeBlindPairwiseJudge({
-      context: fallbackContext,
-      originalTarget: fallbackTarget,
-      generatedCandidate: fallbackCandidate,
-      llmProvider,
-    });
-
-    sampleResults.push({
-      sample_id: 'calibration_sample_001',
-      context: fallbackContext,
-      original_target: fallbackTarget,
-      generated_candidate: fallbackCandidate,
-      metrics,
-      judge,
-    });
+    return {
+      version: '1.1.0',
+      persona_id: persona?.id || 'unknown',
+      created_at: new Date().toISOString(),
+      dataset_size: 0,
+      status: 'INSUFFICIENT_DATA',
+      error: 'Blind test dataset is empty. Evaluation cannot be performed without authentic test samples.',
+      metrics: { lexical: null, style: null, behavior: null, context: null, blind_judge: null },
+      sub_metrics: {
+        emoji_fidelity: null,
+        vocabulary_fidelity: null,
+        sentence_rhythm: null,
+        response_strategy: null,
+        context_fidelity: null,
+      },
+      dsi: null,
+      dsi_scaled: null,
+      gate_results: {
+        dsi_pass: false,
+        lexical_pass: false,
+        style_pass: false,
+        behavior_pass: false,
+        context_pass: false,
+      },
+      failure_cases: [],
+    };
   }
 
   return aggregateEvaluationResults({

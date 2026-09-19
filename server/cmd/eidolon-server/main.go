@@ -52,7 +52,7 @@ func main() {
   ██╔══╝  ██║██║  ██║██║   ██║██║     ██║   ██║██║╚██╗██║
   ███████╗██║██████╔╝╚██████╔╝███████╗╚██████╔╝██║ ╚████║
   ╚══════╝╚═╝╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝
-  Persona Distillation & Memory Runtime v1.0.0
+  Persona Distillation & Memory Runtime v1.1.0
   «Preserve expression. Reconstruct context. Measure fidelity.»
 `)
 
@@ -101,11 +101,17 @@ func main() {
 	// 3. Initialize Memory Engine
 	memoryEng := memory.NewEngine(store)
 
-	// 4. Initialize Scheduler
-	sched := scheduler.NewScheduler(scheduler.Config{
+	// 4. Initialize Scheduler with active persona's distilled latency model (Section 14)
+	schedCfg := scheduler.Config{
 		BaseDelayMs:       2500,
 		DoubleMessageProb: 0.08,
-	})
+	}
+	if active := personaMgr.GetActivePersona(); active != nil {
+		schedCfg = active.GetSchedulerConfig()
+		store.Log("scheduler", "INFO", fmt.Sprintf("Loaded scheduler config from persona %s: BaseDelay=%dms, LatencyModel=(S:%dms, M:%dms, L:%dms)",
+			active.ID, schedCfg.BaseDelayMs, schedCfg.LatencyModel.Short.MedianMs, schedCfg.LatencyModel.Medium.MedianMs, schedCfg.LatencyModel.Long.MedianMs))
+	}
+	sched := scheduler.NewScheduler(schedCfg)
 
 	// 5. Initialize Runtime Orchestrator
 	orch := runtime.NewOrchestrator(store, personaMgr, memoryEng, sched, runtime.LLMConfig{

@@ -12,12 +12,19 @@ import { serviceCommand, logsCommand } from './commands/service.js';
 import { statusCommand } from './commands/status.js';
 import { printBanner } from './utils/banner.js';
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+
 const program = new Command();
 
 program
   .name('eidolon')
   .description('EIDOLON — Persona Distillation & Memory Runtime')
-  .version('1.0.0');
+  .version(pkg.version);
 
 // Default command: print status
 program

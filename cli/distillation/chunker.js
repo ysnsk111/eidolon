@@ -43,8 +43,13 @@ export function chunkAndSplit(normalizedData, options = {}) {
   if (sessionTurns.length >= 3) {
     // Assign whole sessions to splits
     const totalSessions = sessionTurns.length;
-    const nTrainSessions = Math.max(1, Math.floor(totalSessions * trainRatio));
-    const nValSessions = Math.max(1, Math.floor(totalSessions * valRatio));
+    let nValSessions = Math.max(1, Math.floor(totalSessions * valRatio));
+    let nTestSessions = Math.max(1, Math.floor(totalSessions * (1 - trainRatio - valRatio)));
+    if (nValSessions + nTestSessions >= totalSessions) {
+      nValSessions = 1;
+      nTestSessions = 1;
+    }
+    const nTrainSessions = Math.max(1, totalSessions - nValSessions - nTestSessions);
 
     for (let i = 0; i < sessionTurns.length; i++) {
       if (i < nTrainSessions) {
@@ -68,43 +73,22 @@ export function chunkAndSplit(normalizedData, options = {}) {
     blindTestSamples = allTurns.slice(nTrain + nVal);
   }
 
-  // 3. Near-Duplicate Detection & Cross-Split Contamination Protection (Section 15)
-  const trainTexts = distillationSamples.map((s) => s.target_message.trim().toLowerCase());
-  const exactCrossDuplicates = [];
-  const nearDuplicates = [];
+  // 3. Near-Duplicate Detection & Cross-Split Contamination Protection (Section 15 & Section 17)
+  // Check all pairs: Train <-> Validation, Train <-> Test, Validation <-> Test
+  const auditTrainVal = auditPairContamination(distillationSamples, validationSamples);
+  validationSamples = auditTrainVal.cleanB;
 
-  const filteredBlindTest = [];
+  const auditTrainTest = auditPairContamination(distillationSamples, blindTestSamples);
+  blindTestSamples = auditTrainTest.cleanB;
 
-  for (const testSample of blindTestSamples) {
-    const testText = testSample.target_message.trim().toLowerCase();
-    let isContaminated = false;
-
-    for (const trText of trainTexts) {
-      if (testText === trText) {
-        exactCrossDuplicates.push({ testId: testSample.id, text: testText });
-        isContaminated = true;
-        break;
-      }
-      const sim = computeNgramJaccard(testText, trText, 3);
-      if (sim > 0.90) {
-        nearDuplicates.push({ testId: testSample.id, testText, trainText: trText, similarity: sim });
-        isContaminated = true;
-        break;
-      }
-    }
-
-    if (!isContaminated) {
-      filteredBlindTest.push(testSample);
-    }
-  }
-
-  // If blind test set is large enough, filter out contaminated samples
-  if (filteredBlindTest.length > 0 || blindTestSamples.length === 0) {
-    blindTestSamples = filteredBlindTest;
-  }
+  const auditValTest = auditPairContamination(validationSamples, blindTestSamples);
+  blindTestSamples = auditValTest.cleanB;
 
   const allFilteredTurns = distillationSamples.length + validationSamples.length + blindTestSamples.length;
-  const auditPassed = exactCrossDuplicates.length === 0 && nearDuplicates.length === 0;
+  const trainValDups = auditTrainVal.totalDuplicates;
+  const trainTestDups = auditTrainTest.totalDuplicates;
+  const valTestDups = auditValTest.totalDuplicates;
+  const auditPassed = trainValDups === 0 && trainTestDups === 0 && valTestDups === 0;
 
   return {
     totalTurns: allFilteredTurns,
@@ -119,12 +103,51 @@ export function chunkAndSplit(normalizedData, options = {}) {
       trainPercentage: allFilteredTurns > 0 ? round((distillationSamples.length / allFilteredTurns) * 100, 1) : 0,
       valPercentage: allFilteredTurns > 0 ? round((validationSamples.length / allFilteredTurns) * 100, 1) : 0,
       blindPercentage: allFilteredTurns > 0 ? round((blindTestSamples.length / allFilteredTurns) * 100, 1) : 0,
-      crossSplitDuplicates: exactCrossDuplicates.length,
-      nearDuplicates: nearDuplicates.length,
+      train_validation_duplicates: trainValDups,
+      train_test_duplicates: trainTestDups,
+      validation_test_duplicates: valTestDups,
+      crossSplitDuplicates: trainValDups + trainTestDups + valTestDups,
+      nearDuplicates: auditTrainVal.nearDuplicates.length + auditTrainTest.nearDuplicates.length + auditValTest.nearDuplicates.length,
       speakerLeakage: 0,
       contextLeakage: 0,
     },
     sessionsCount: sessionTurns.length,
+  };
+}
+
+function auditPairContamination(setA, setB) {
+  const textsA = setA.map((s) => s.target_message.trim().toLowerCase());
+  const exactDuplicates = [];
+  const nearDuplicates = [];
+  const contaminatedBIndices = new Set();
+
+  for (let bIdx = 0; bIdx < setB.length; bIdx++) {
+    const bSample = setB[bIdx];
+    const bText = bSample.target_message.trim().toLowerCase();
+
+    for (let aIdx = 0; aIdx < textsA.length; aIdx++) {
+      const aText = textsA[aIdx];
+      if (bText === aText) {
+        exactDuplicates.push({ bId: bSample.id, aId: setA[aIdx].id, text: bText });
+        contaminatedBIndices.add(bIdx);
+        break;
+      }
+      const sim = computeNgramJaccard(bText, aText, 3);
+      if (sim > 0.90) {
+        nearDuplicates.push({ bId: bSample.id, bText, aText, similarity: sim });
+        contaminatedBIndices.add(bIdx);
+        break;
+      }
+    }
+  }
+
+  const cleanB = setB.filter((_, idx) => !contaminatedBIndices.has(idx));
+
+  return {
+    exactDuplicates,
+    nearDuplicates,
+    cleanB,
+    totalDuplicates: exactDuplicates.length + nearDuplicates.length,
   };
 }
 

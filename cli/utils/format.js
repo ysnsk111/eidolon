@@ -1,6 +1,9 @@
 import pc from 'picocolors';
 
 export function formatScore(score, isScaled = false) {
+  if (score === null || score === undefined || Number.isNaN(score)) {
+    return pc.dim('N/A');
+  }
   const num = typeof score === 'number' ? score : parseFloat(score) || 0;
   const val = isScaled ? num : (num * 100);
   const formatted = val.toFixed(1);
@@ -23,6 +26,7 @@ export function formatStatus(status) {
     case 'NEEDS_OPTIMIZATION':
     case 'DEGRADED':
     case 'WARN':
+    case 'INSUFFICIENT_DATA':
       return pc.yellow(`● ${status}`);
     default:
       return pc.dim(`● ${status || 'UNKNOWN'}`);

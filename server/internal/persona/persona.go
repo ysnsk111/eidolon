@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"eidolon/server/internal/scheduler"
 )
 
 type PersonaManager struct {
@@ -114,3 +116,84 @@ func (pm *PersonaManager) GetActivePersona() *LoadedPersona {
 	defer pm.mu.RUnlock()
 	return pm.activePersona
 }
+
+// GetSchedulerConfig extracts the distilled latency model and conversation rhythm
+// from behavior.json to configure the scheduler with real observed timing.
+// P0 Fix (Section 14): Connects active persona's behavior model directly to Runtime scheduler.
+func (lp *LoadedPersona) GetSchedulerConfig() scheduler.Config {
+	cfg := scheduler.Config{
+		BaseDelayMs:       3500,
+		DoubleMessageProb: 0.08,
+	}
+	if lp == nil || lp.Behavior == nil {
+		return cfg
+	}
+
+	rhythm, ok := lp.Behavior["conversation_rhythm"].(map[string]interface{})
+	if !ok {
+		rhythm = lp.Behavior
+	}
+
+	if bDelay := parseNum(rhythm["base_delay_ms"]); bDelay > 0 {
+		cfg.BaseDelayMs = bDelay
+	}
+	if dProb := parseFloat(rhythm["double_message_probability"]); dProb > 0 {
+		cfg.DoubleMessageProb = dProb
+	}
+
+	if latMod, ok := rhythm["latency_model"].(map[string]interface{}); ok {
+		parseBucket := func(raw interface{}) scheduler.LatencyBucket {
+			var b scheduler.LatencyBucket
+			m, ok := raw.(map[string]interface{})
+			if !ok {
+				return b
+			}
+			b.MedianMs = parseNum(m["median_ms"])
+			b.P90Ms = parseNum(m["p90_ms"])
+			if samples := parseNum(m["sample_size"]); samples > 0 {
+				b.Samples = samples
+			} else {
+				b.Samples = parseNum(m["samples"])
+			}
+			return b
+		}
+		cfg.LatencyModel.Short = parseBucket(latMod["short"])
+		cfg.LatencyModel.Medium = parseBucket(latMod["medium"])
+		cfg.LatencyModel.Long = parseBucket(latMod["long"])
+	}
+
+	return cfg
+}
+
+func parseNum(v interface{}) int {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func parseFloat(v interface{}) float64 {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
+	}
+}
+

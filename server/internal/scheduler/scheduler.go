@@ -3,6 +3,7 @@ package scheduler
 import (
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 )
 
@@ -47,6 +48,7 @@ type ScheduleResult struct {
 
 // Scheduler computes human-like delays based on observed response latency distributions.
 type Scheduler struct {
+	mu  sync.Mutex
 	cfg Config
 	rng *rand.Rand
 }
@@ -72,6 +74,33 @@ func NewScheduler(cfg Config) *Scheduler {
 	}
 }
 
+// UpdateConfig updates the scheduler configuration dynamically (e.g. when persona loads).
+func (s *Scheduler) UpdateConfig(cfg Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cfg.MinDelayMs <= 0 {
+		cfg.MinDelayMs = 800
+	}
+	if cfg.MaxDelayMs <= 0 {
+		cfg.MaxDelayMs = 20000
+	}
+	if cfg.BaseDelayMs <= 0 {
+		cfg.BaseDelayMs = 3500
+	}
+	if cfg.DoubleMessageProb <= 0 {
+		cfg.DoubleMessageProb = 0.08
+	}
+	s.cfg = cfg
+}
+
+// GetConfig returns a copy of current scheduler config.
+func (s *Scheduler) GetConfig() Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
 // CalculateSchedule computes human-like delay using the observed latency model.
 //
 // Algorithm:
@@ -84,6 +113,9 @@ func NewScheduler(cfg Config) *Scheduler {
 // Chat timestamps can measure reply latency (perception + think + type + send),
 // but not pure typing speed. Fabricating 180 CPM overstates predictability.
 func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) ScheduleResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	charCount := len([]rune(replyText))
 
 	// 1. Determine length bucket and select base latency

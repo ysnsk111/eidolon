@@ -8,6 +8,13 @@ export function printEvaluationTable(report) {
   console.log(`${pc.bold('Persona:')} ${report.persona_id}`);
   console.log(`${pc.bold('Dataset:')} ${report.dataset_size} blind samples\n`);
 
+  if (report.status === 'INSUFFICIENT_DATA') {
+    console.log(pc.yellow(`⚠ Cannot evaluate persona: ${report.error || 'Blind test dataset is empty'}`));
+    console.log(pc.dim('─'.repeat(45)));
+    console.log(pc.bold(`Status: ${formatStatus(report.status)}\n`));
+    return;
+  }
+
   const table = new Table({
     head: [pc.white('Metric Dimension'), pc.white('Score'), pc.white('Quality Gate')],
     colWidths: [26, 14, 16],
@@ -28,7 +35,7 @@ export function printEvaluationTable(report) {
 }
 
 export function generateEvaluationReportHtml(report, persona) {
-  const dsiPercent = (report.dsi * 100).toFixed(1);
+  const dsiPercent = report.dsi !== null && report.dsi !== undefined ? (report.dsi * 100).toFixed(1) : 'N/A';
   const failureRows = (report.failure_cases || []).map((f, i) => `
     <div class="failure-card">
       <div class="failure-header">

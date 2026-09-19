@@ -77,7 +77,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 
 	personaID := activeP.ID
 
-	// 1. Record incoming message
+	// 1. Prepare incoming message
 	inMsg := storage.MessageItem{
 		ID:        fmt.Sprintf("msg_in_%d", time.Now().UnixNano()),
 		SessionID: sessionID,
@@ -87,7 +87,6 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		Content:   userContent,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	_ = o.store.SaveMessage(inMsg)
 	o.memoryEng.AddWorkingMessage(sessionID, inMsg)
 
 	// 2. Context & Memory Retrieval
@@ -154,13 +153,25 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	// This is NOT the Style Critic; it is a hard safety guardrail.
 	finalResponse := sanitizeOutput(selected, activeP.Persona.TargetSpeaker)
 
-	// 7. Memory Pipeline
-	o.memoryEng.ExtractAndSaveMemoryPipeline(personaID, sessionID, userContent, finalResponse)
+	// 7. Memory Candidate Extraction & Version Superseding Deltas (Section 10 & 12)
+	// Does not write directly to DB; returns memory delta items for atomic commit.
+	var extractor memory.LLMExtractor
+	if o.llmCfg.BaseURL != "" && o.llmCfg.Model != "" {
+		extractor = func(prompt string) (string, error) {
+			critMsgs := []map[string]string{
+				{"role": "system", "content": "Extract memories as JSON object with 'memories': [{category, key, value, importance_score, confidence}]"},
+				{"role": "user", "content": prompt},
+			}
+			return o.callLLM(critMsgs, 0.1, 300)
+		}
+	}
+	memDeltas := o.memoryEng.ExtractMemoryDeltas(personaID, sessionID, userContent, finalResponse, extractor)
 
-	// 8. Response Scheduler
+	// 8. Dynamic Response Scheduler configured with active persona's latency model (Section 14)
+	o.sched.UpdateConfig(activeP.GetSchedulerConfig())
 	scheduleRes := o.sched.CalculateSchedule(finalResponse, len(retrieval.WorkingContext) > 4)
 
-	// 9. Record Outgoing message
+	// 9. Prepare Outgoing message and Scheduler event
 	outMsg := storage.MessageItem{
 		ID:        fmt.Sprintf("msg_out_%d", time.Now().UnixNano()),
 		SessionID: sessionID,
@@ -171,10 +182,8 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		LatencyMs: scheduleRes.TotalDelayMs,
 	}
-	_ = o.store.SaveMessage(outMsg)
-	o.memoryEng.AddWorkingMessage(sessionID, outMsg)
 
-	_ = o.store.RecordSchedulerEvent(storage.SchedulerEvent{
+	schedEvt := storage.SchedulerEvent{
 		ID:               fmt.Sprintf("evt_%d", time.Now().UnixNano()),
 		SessionID:        sessionID,
 		MessageID:        outMsg.ID,
@@ -183,7 +192,21 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		JitterMs:         scheduleRes.JitterMs,
 		TypingDurationMs: scheduleRes.TypingDurationMs,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+
+	// 10. Atomic Commit of Interaction Transaction (Section 12 & 21)
+	// Bundles incoming message, memory deltas, outgoing message, and scheduler event
+	// into a single SQLite transaction, guaranteeing zero partial-state tears.
+	tx := storage.InteractionTransaction{
+		InMessage:      &inMsg,
+		Memories:       memDeltas,
+		OutMessage:     &outMsg,
+		SchedulerEvent: &schedEvt,
+	}
+	if err := o.store.CommitInteraction(tx); err != nil {
+		return nil, fmt.Errorf("failed to commit interaction transaction: %w", err)
+	}
+	o.memoryEng.AddWorkingMessage(sessionID, outMsg)
 
 	return &GenerationResult{
 		FinalMessage: finalResponse,

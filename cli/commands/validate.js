@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yauzl from 'yauzl';
+import Ajv from 'ajv';
 import pc from 'picocolors';
 import { logger } from '../utils/logger.js';
+
+const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
 
 /**
  * EIDOLON Package Schema Validator
  * Implements Section 24 of the specification.
- * Validates .eidolon packages and directories against formal JSON schemas.
+ * Validates .eidolon packages and directories against formal JSON schemas using Ajv.
  */
 
 export async function validateCommand(packagePath) {
@@ -26,17 +29,40 @@ export async function validateCommand(packagePath) {
   console.log(pc.bold(pc.cyan(`Validating EIDOLON Package: ${path.basename(resolved)}`)));
   logger.divider();
 
+  const result = await validatePackage(resolved);
+
+  for (const item of result.details) {
+    if (item.valid) {
+      console.log(pc.green(`  ✓ ${item.name}`));
+    } else {
+      console.log(pc.red(`  ✖ ${item.name}`));
+      if (Array.isArray(item.errors)) {
+        for (const err of item.errors) {
+          console.log(pc.red(`      ${err}`));
+        }
+      } else if (item.error) {
+        console.log(pc.red(`      ${item.error}`));
+      }
+    }
+  }
+
+  logger.divider();
+  if (result.valid) {
+    console.log(pc.green(pc.bold('Package valid.')));
+  } else {
+    console.log(pc.red(pc.bold('Package validation failed.')));
+    process.exit(1);
+  }
+}
+
+export async function validatePackage(packagePath) {
+  const resolved = path.resolve(packagePath);
   let packageContents = {};
 
   if (fs.statSync(resolved).isDirectory()) {
     packageContents = readDirectoryContents(resolved);
   } else {
-    try {
-      packageContents = await readZipContents(resolved);
-    } catch (err) {
-      logger.error(`Failed to read archive bundle: ${err.message}`);
-      process.exit(1);
-    }
+    packageContents = await readZipContents(resolved);
   }
 
   const schemaMap = [
@@ -50,6 +76,8 @@ export async function validateCommand(packagePath) {
 
   const schemasDir = path.join(process.cwd(), 'schemas');
   let allValid = true;
+  const details = [];
+  const allErrors = [];
 
   for (const item of schemaMap) {
     let content = packageContents[item.file];
@@ -58,8 +86,10 @@ export async function validateCommand(packagePath) {
     }
 
     if (!content) {
-      console.log(pc.red(`  ✖ ${item.name} (missing ${item.file})`));
       allValid = false;
+      const msg = `missing ${item.file}`;
+      details.push({ name: item.name, valid: false, error: msg, errors: [msg] });
+      allErrors.push(`${item.name}: ${msg}`);
       continue;
     }
 
@@ -67,20 +97,24 @@ export async function validateCommand(packagePath) {
     const validationResult = validateAgainstSchema(content, schemaPath);
 
     if (validationResult.valid) {
-      console.log(pc.green(`  ✓ ${item.name}`));
+      details.push({ name: item.name, valid: true });
     } else {
-      console.log(pc.red(`  ✖ ${item.name} (${validationResult.error})`));
       allValid = false;
+      details.push({
+        name: item.name,
+        valid: false,
+        error: validationResult.error,
+        errors: validationResult.formattedErrors || [validationResult.error],
+      });
+      allErrors.push(`${item.name}: ${validationResult.error}`);
     }
   }
 
-  logger.divider();
-  if (allValid) {
-    console.log(pc.green(pc.bold('Package valid.')));
-  } else {
-    console.log(pc.red(pc.bold('Package validation failed.')));
-    process.exit(1);
-  }
+  return {
+    valid: allValid,
+    details,
+    errors: allErrors,
+  };
 }
 
 function readDirectoryContents(dirPath) {
@@ -139,24 +173,28 @@ function readZipContents(zipPath) {
 
 function validateAgainstSchema(content, schemaPath) {
   if (!fs.existsSync(schemaPath)) {
-    // If formal schema file doesn't exist, basic sanity check
     return { valid: typeof content === 'object' && content !== null };
   }
 
   try {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8'));
+    const validate = ajv.compile(schema);
+    const valid = validate(content);
 
-    // Check required top-level fields if specified
-    if (Array.isArray(schema.required)) {
-      for (const req of schema.required) {
-        if (content[req] === undefined) {
-          return { valid: false, error: `missing required property: ${req}` };
-        }
-      }
+    if (!valid) {
+      const formattedErrors = (validate.errors || []).map(
+        (e) => `${e.instancePath || '/'} ${e.message}`
+      );
+      return {
+        valid: false,
+        error: formattedErrors.join('; '),
+        formattedErrors,
+        errors: validate.errors,
+      };
     }
 
     return { valid: true };
   } catch (err) {
-    return { valid: false, error: err.message };
+    return { valid: false, error: err.message, formattedErrors: [err.message] };
   }
 }
