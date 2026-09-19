@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EidolonPackageManifest",
+  "type": "object",
+  "required": [
+    "eidolon_version",
+    "package_name",
+    "persona_id",
+    "created_at",
+    "dsi_score",
+    "evaluation_status",
+    "components"
+  ],
+  "properties": {
+    "eidolon_version": { "type": "string" },
+    "package_name": { "type": "string" },
+    "persona_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "dsi_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evaluation_status": { "type": "string" },
+    "model_metadata": {
+      "type": "object",
+      "properties": {
+        "distillation_model": { "type": "string" },
+        "judge_model": { "type": "string" },
+        "temperature": { "type": "number" }
+      }
+    },
+    "components": {
+      "type": "object",
+      "required": [
+        "persona",
+        "style",
+        "behavior",
+        "language_model",
+        "world",
+        "relationships",
+        "memory_seed",
+        "assets",
+        "evaluation"
+      ],
+      "properties": {
+        "persona": { "type": "string" },
+        "style": { "type": "string" },
+        "behavior": { "type": "string" },
+        "language_model": { "type": "string" },
+        "world": { "type": "string" },
+        "relationships": { "type": "string" },
+        "memory_seed": { "type": "string" },
+        "assets": { "type": "string" },
+        "evaluation": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+[Unit]
+Description=EIDOLON Persona Distillation & Memory Runtime
+After=network.target
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory=%h/project/eidolon
+ExecStart=%h/project/eidolon/bin/eidolon-server
+Restart=always
+RestartSec=5s
+Environment="NODE_ENV=production"
+Environment="EIDOLON_CONFIG=%h/.config/eidolon/config.json"
+StandardOutput=append:%h/.config/eidolon/runtime.log
+StandardError=append:%h/.config/eidolon/runtime.log
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EidolonBehaviorModel",
+  "type": "object",
+  "required": [
+    "version",
+    "response_policies",
+    "conversation_rhythm",
+    "reply_mode_preference"
+  ],
+  "properties": {
+    "version": { "type": "string" },
+    "response_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["situation", "strategy", "length_bias", "emoji_probability", "follow_up_probability"],
+        "properties": {
+          "situation": { "type": "string" },
+          "strategy": { "type": "string" },
+          "length_bias": { "type": "string", "enum": ["micro", "short", "medium", "long"] },
+          "emoji_probability": { "type": "number", "minimum": 0, "maximum": 1 },
+          "follow_up_probability": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "conversation_rhythm": {
+      "type": "object",
+      "required": ["base_delay_ms", "typing_speed_cpm", "double_message_probability", "topic_switch_probability"],
+      "properties": {
+        "base_delay_ms": { "type": "number", "minimum": 500 },
+        "typing_speed_cpm": { "type": "number", "minimum": 50 },
+        "double_message_probability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "topic_switch_probability": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "reply_mode_preference": {
+      "type": "object",
+      "properties": {
+        "quote_reply_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "direct_send_rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

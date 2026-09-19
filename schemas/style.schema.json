@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EidolonStyleModel",
+  "type": "object",
+  "required": [
+    "version",
+    "metrics",
+    "conditional_probabilities",
+    "punctuation_profile",
+    "length_distribution"
+  ],
+  "properties": {
+    "version": { "type": "string" },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "ellipsis_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "question_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "exclamation_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "line_break_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "repetition_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "emoji_density": { "type": "number", "minimum": 0 }
+      }
+    },
+    "conditional_probabilities": {
+      "type": "object",
+      "properties": {
+        "p_emoji_given_joking": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p_emoji_given_serious": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p_emoji_given_sadness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p_ellipsis_given_uncertainty": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p_short_given_greeting": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p_long_given_explanation": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p_sticker_given_closing": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "punctuation_profile": {
+      "type": "object",
+      "properties": {
+        "favored_punctuations": { "type": "array", "items": { "type": "string" } },
+        "terminal_punctuation_drop_rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "length_distribution": {
+      "type": "object",
+      "required": ["median", "p90", "mean", "std_dev"],
+      "properties": {
+        "median": { "type": "number" },
+        "p90": { "type": "number" },
+        "mean": { "type": "number" },
+        "std_dev": { "type": "number" }
+      }
+    }
+  }
+}

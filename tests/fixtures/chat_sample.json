@@ -1,0 +1,35 @@
+{
+  "name": "Chat with Alice",
+  "type": "personal_chat",
+  "id": 100234,
+  "messages": [
+    {
+      "id": 1,
+      "type": "message",
+      "date": "2026-05-15T08:30:00Z",
+      "from": "User",
+      "text": "今天早上有计算机网络的课，记得带实验报告！"
+    },
+    {
+      "id": 2,
+      "type": "message",
+      "date": "2026-05-15T08:32:10Z",
+      "from": "Alice",
+      "text": "啊啊啊多亏你提醒！我差点忘了打印……现在正在打印店排队呢😭"
+    },
+    {
+      "id": 3,
+      "type": "message",
+      "date": "2026-05-15T08:33:00Z",
+      "from": "User",
+      "text": "人多吗？要不要我先帮你签到？"
+    },
+    {
+      "id": 4,
+      "type": "message",
+      "date": "2026-05-15T08:35:05Z",
+      "from": "Alice",
+      "text": "人超级多……你要是到了就先帮我签个到嘛，爱你！马上冲过去！"
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EidolonPersona",
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "name",
+    "created_at",
+    "identity",
+    "linguistic_fingerprint",
+    "response_policy",
+    "system_prompts"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^persona_[0-9]{8}_[0-9]{6}(_[a-z0-9]+)?$"
+    },
+    "version": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "target_speaker": {
+      "type": "string"
+    },
+    "counterpart_speaker": {
+      "type": "string"
+    },
+    "identity": {
+      "type": "object",
+      "required": ["core_traits", "relationship_dynamic", "emotional_baseline", "boundary_rules"],
+      "properties": {
+        "core_traits": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "relationship_dynamic": {
+          "type": "string"
+        },
+        "emotional_baseline": {
+          "type": "string"
+        },
+        "boundary_rules": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "linguistic_fingerprint": {
+      "type": "object",
+      "required": ["vocabulary", "punctuation", "sentence_metrics", "openers", "closers"],
+      "properties": {
+        "vocabulary": { "type": "object" },
+        "punctuation": { "type": "object" },
+        "sentence_metrics": { "type": "object" },
+        "openers": { "type": "array", "items": { "type": "string" } },
+        "closers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "response_policy": {
+      "type": "object",
+      "required": ["strategies", "follow_up_rate", "double_message_rate"],
+      "properties": {
+        "strategies": { "type": "array" },
+        "follow_up_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "double_message_rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "system_prompts": {
+      "type": "object",
+      "required": ["generator", "critic", "rewriter"],
+      "properties": {
+        "generator": { "type": "string" },
+        "critic": { "type": "string" },
+        "rewriter": { "type": "string" }
+      }
+    }
+  }
+}

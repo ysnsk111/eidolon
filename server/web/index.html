@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EIDOLON — Persona Distillation & Memory Runtime</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- GSAP for reactive UI animations -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body>
+  <div class="dashboard-wrapper">
+    <!-- Top Navigation & Status -->
+    <header class="top-nav">
+      <div class="brand">
+        <div class="logo-glyph">E</div>
+        <div>
+          <h1>EIDOLON</h1>
+          <span class="version-tag">v1.0.0 LTS</span>
+        </div>
+      </div>
+      <div class="status-ribbon">
+        <div class="status-pill"><span class="dot running"></span> Runtime: <strong id="st-runtime">RUNNING</strong></div>
+        <div class="status-pill"><span class="dot connected" id="st-tg-dot"></span> Telegram: <strong id="st-telegram">READY</strong></div>
+        <div class="status-pill"><span class="dot ok"></span> LLM: <strong id="st-llm">ONLINE</strong></div>
+      </div>
+    </header>
+
+    <!-- Hero Cards -->
+    <section class="metrics-hero">
+      <div class="card hero-card">
+        <div class="card-label">Active Persona</div>
+        <div class="hero-val" id="active-persona-name">Loading...</div>
+        <div class="card-sub" id="active-persona-id">ID: None</div>
+      </div>
+      <div class="card hero-card">
+        <div class="card-label">Distillation Score (DSI)</div>
+        <div class="hero-val score-val" id="dsi-score">--%</div>
+        <div class="card-sub" id="dsi-status">Quality Gate: Pending</div>
+      </div>
+      <div class="card hero-card">
+        <div class="card-label">Memory Vault</div>
+        <div class="hero-val" id="total-memories">0</div>
+        <div class="card-sub">L0: <span id="m-l0">0</span> | L1: <span id="m-l1">0</span> | L2: <span id="m-l2">0</span> | L3: <span id="m-l3">0</span></div>
+      </div>
+      <div class="card hero-card">
+        <div class="card-label">Sessions Handled</div>
+        <div class="hero-val" id="total-sessions">0</div>
+        <div class="card-sub">Zero Streaming Enforced</div>
+      </div>
+    </section>
+
+    <!-- Main Content Tabs -->
+    <nav class="content-tabs">
+      <button class="tab-btn active" data-tab="distillation">Distillation & DSI</button>
+      <button class="tab-btn" data-tab="memory">Memory Engine (L0-L3)</button>
+      <button class="tab-btn" data-tab="chat">Interactive Simulator</button>
+      <button class="tab-btn" data-tab="logs">Runtime Logs</button>
+    </nav>
+
+    <!-- Tab 1: Distillation & DSI -->
+    <main id="tab-distillation" class="tab-pane active">
+      <div class="grid-2col">
+        <div class="card">
+          <h3>DSI 5-Dimension Radar Breakdown</h3>
+          <p class="section-desc">Distillation Similarity Index measured against isolated blind test dataset.</p>
+          <div class="dimension-bars">
+            <div class="bar-group">
+              <div class="bar-header"><span>Lexical Similarity (20%)</span><strong id="dim-lexical">--%</strong></div>
+              <div class="bar-bg"><div class="bar-fill" id="fill-lexical" style="width: 0%"></div></div>
+            </div>
+            <div class="bar-group">
+              <div class="bar-header"><span>Structural Style (20%)</span><strong id="dim-style">--%</strong></div>
+              <div class="bar-bg"><div class="bar-fill" id="fill-style" style="width: 0%"></div></div>
+            </div>
+            <div class="bar-group">
+              <div class="bar-header"><span>Behavior Policy (25%)</span><strong id="dim-behavior">--%</strong></div>
+              <div class="bar-bg"><div class="bar-fill" id="fill-behavior" style="width: 0%"></div></div>
+            </div>
+            <div class="bar-group">
+              <div class="bar-header"><span>Context Consistency (15%)</span><strong id="dim-context">--%</strong></div>
+              <div class="bar-bg"><div class="bar-fill" id="fill-context" style="width: 0%"></div></div>
+            </div>
+            <div class="bar-group">
+              <div class="bar-header"><span>Independent Blind Judge (20%)</span><strong id="dim-judge">--%</strong></div>
+              <div class="bar-bg"><div class="bar-fill" id="fill-judge" style="width: 0%"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Persona Linguistic Fingerprint</h3>
+          <p class="section-desc">Extracted mathematical distributions of the active speaker.</p>
+          <div class="stat-grid" id="fingerprint-stats">
+            <div class="stat-box"><label>Median Length</label><span id="fp-median-len">-- chars</span></div>
+            <div class="stat-box"><label>P90 Length</label><span id="fp-p90-len">-- chars</span></div>
+            <div class="stat-box"><label>Ellipsis Rate</label><span id="fp-ellipsis">--%</span></div>
+            <div class="stat-box"><label>Question Rate</label><span id="fp-question">--%</span></div>
+          </div>
+          <div style="margin-top: 15px;">
+            <label style="font-size: 11px; text-transform: uppercase; color: var(--text-dim);">Catchphrases & Idioms</label>
+            <div class="tags-row" id="fp-catchphrases"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 20px;">
+        <h3>Failure Cases & Style Divergence Inspector</h3>
+        <p class="section-desc">Samples where generated candidate differed from historical target.</p>
+        <div id="failures-container" class="failures-list">
+          <p class="empty-hint">Loading failure analysis...</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- Tab 2: Memory Engine -->
+    <section id="tab-memory" class="tab-pane">
+      <div class="card">
+        <div class="card-header-flex">
+          <div>
+            <h3>4-Layer Memory Vault</h3>
+            <p class="section-desc">Working, Episodic, Versioned Semantic Facts, and Timeline Graph.</p>
+          </div>
+          <div class="filter-pills">
+            <button class="pill active" data-layer="">All Layers</button>
+            <button class="pill" data-layer="L0">L0 Working</button>
+            <button class="pill" data-layer="L1">L1 Episodic</button>
+            <button class="pill" data-layer="L2">L2 Semantic</button>
+            <button class="pill" data-layer="L3">L3 World</button>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Category / Key</th>
+                <th>Memory Content</th>
+                <th>Importance</th>
+                <th>Valid Period</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="memory-tbody">
+              <tr><td colspan="6" class="empty-hint">No memories recorded yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: Interactive Chat Simulator -->
+    <section id="tab-chat" class="tab-pane">
+      <div class="card chat-card">
+        <div class="chat-header">
+          <div>
+            <h3 id="chat-persona-title">Conversation with Persona</h3>
+            <span class="chat-subtitle">Simulating human typing latency and response scheduler</span>
+          </div>
+        </div>
+        <div class="chat-messages" id="chat-stream">
+          <div class="msg-bubble system">Conversation initialized. Zero-streaming active. Type a message to test.</div>
+        </div>
+        <div class="typing-indicator-bar" id="typing-indicator" style="display: none;">
+          <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span> <span id="typing-text">typing...</span>
+        </div>
+        <form class="chat-input-bar" id="chat-form">
+          <input type="text" id="chat-input" placeholder="Type a message to the persona..." autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Tab 4: Logs -->
+    <section id="tab-logs" class="tab-pane">
+      <div class="card">
+        <div class="card-header-flex">
+          <h3>Runtime Audit Logs</h3>
+          <button id="refresh-logs-btn" class="pill">Refresh</button>
+        </div>
+        <pre class="log-stream" id="log-view">Fetching logs...</pre>
+      </div>
+    </section>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

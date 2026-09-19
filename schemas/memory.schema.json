@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EidolonMemoryModel",
+  "type": "object",
+  "required": ["version", "persona_id", "working_memory", "episodes", "facts", "timeline"],
+  "properties": {
+    "version": { "type": "string" },
+    "persona_id": { "type": "string" },
+    "working_memory": {
+      "type": "object",
+      "properties": {
+        "recent_turns": { "type": "array" },
+        "active_topic": { "type": "string" },
+        "user_state": { "type": "string" }
+      }
+    },
+    "episodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "timestamp", "summary", "importance_score", "sentiment"],
+        "properties": {
+          "id": { "type": "string" },
+          "timestamp": { "type": "string" },
+          "summary": { "type": "string" },
+          "importance_score": { "type": "number", "minimum": 0, "maximum": 1 },
+          "sentiment": { "type": "string" },
+          "source": { "type": "string", "enum": ["historical_conversation", "supplied_context", "runtime"] }
+        }
+      }
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key", "versions"],
+        "properties": {
+          "key": { "type": "string" },
+          "category": { "type": "string" },
+          "versions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["value", "valid_from"],
+              "properties": {
+                "value": {},
+                "valid_from": { "type": "string" },
+                "valid_to": { "type": ["string", "null"] },
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["event_id", "date_or_period", "title", "description", "impact"],
+        "properties": {
+          "event_id": { "type": "string" },
+          "date_or_period": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "impact": { "type": "string" }
+        }
+      }
+    }
+  }
+}

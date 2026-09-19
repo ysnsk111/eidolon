@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EidolonEvaluationReport",
+  "type": "object",
+  "required": [
+    "version",
+    "persona_id",
+    "dataset_size",
+    "metrics",
+    "dsi",
+    "status",
+    "gate_results",
+    "created_at"
+  ],
+  "properties": {
+    "version": { "type": "string" },
+    "persona_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "dataset_size": { "type": "integer", "minimum": 1 },
+    "metrics": {
+      "type": "object",
+      "required": ["lexical", "style", "behavior", "context", "blind_judge"],
+      "properties": {
+        "lexical": { "type": "number", "minimum": 0, "maximum": 1 },
+        "style": { "type": "number", "minimum": 0, "maximum": 1 },
+        "behavior": { "type": "number", "minimum": 0, "maximum": 1 },
+        "context": { "type": "number", "minimum": 0, "maximum": 1 },
+        "blind_judge": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "sub_metrics": {
+      "type": "object",
+      "properties": {
+        "emoji_fidelity": { "type": "number" },
+        "vocabulary_fidelity": { "type": "number" },
+        "sentence_rhythm": { "type": "number" },
+        "response_strategy": { "type": "number" },
+        "context_fidelity": { "type": "number" }
+      }
+    },
+    "dsi": { "type": "number", "minimum": 0, "maximum": 1 },
+    "dsi_scaled": { "type": "number", "minimum": 0, "maximum": 100 },
+    "status": { "type": "string", "enum": ["PASS", "FAIL", "NEEDS_OPTIMIZATION"] },
+    "gate_results": {
+      "type": "object",
+      "required": ["dsi_pass", "lexical_pass", "style_pass", "behavior_pass", "context_pass"],
+      "properties": {
+        "dsi_pass": { "type": "boolean" },
+        "lexical_pass": { "type": "boolean" },
+        "style_pass": { "type": "boolean" },
+        "behavior_pass": { "type": "boolean" },
+        "context_pass": { "type": "boolean" }
+      }
+    },
+    "failure_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sample_id", "context", "original_target", "generated_candidate", "issues", "score"],
+        "properties": {
+          "sample_id": { "type": "string" },
+          "context": { "type": "array", "items": { "type": "string" } },
+          "original_target": { "type": "string" },
+          "generated_candidate": { "type": "string" },
+          "issues": { "type": "array", "items": { "type": "string" } },
+          "score": { "type": "number" }
+        }
+      }
+    }
+  }
+}
