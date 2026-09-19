@@ -177,6 +177,52 @@ func (s *Storage) RecordSchedulerEvent(evt SchedulerEvent) error {
 	return s.persist()
 }
 
+// InteractionTransaction aggregates incoming msg, memory deltas, outgoing msg, and scheduler event for atomic commit.
+// P1 Fix (Section 21): Prevents partial state corruption if intermediate writes fail.
+type InteractionTransaction struct {
+	InMessage      *MessageItem
+	Memories       []MemoryItem
+	OutMessage     *MessageItem
+	SchedulerEvent *SchedulerEvent
+}
+
+func (s *Storage) CommitInteraction(tx InteractionTransaction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	if tx.InMessage != nil && tx.InMessage.ID != "" {
+		if tx.InMessage.Timestamp == "" {
+			tx.InMessage.Timestamp = now
+		}
+		s.data.Messages = append(s.data.Messages, *tx.InMessage)
+	}
+
+	for _, m := range tx.Memories {
+		if m.CreatedAt == "" {
+			m.CreatedAt = now
+		}
+		s.data.Memories = append(s.data.Memories, m)
+	}
+
+	if tx.OutMessage != nil && tx.OutMessage.ID != "" {
+		if tx.OutMessage.Timestamp == "" {
+			tx.OutMessage.Timestamp = now
+		}
+		s.data.Messages = append(s.data.Messages, *tx.OutMessage)
+	}
+
+	if tx.SchedulerEvent != nil && tx.SchedulerEvent.ID != "" {
+		if tx.SchedulerEvent.CreatedAt == "" {
+			tx.SchedulerEvent.CreatedAt = now
+		}
+		s.data.SchedulerEvents = append(s.data.SchedulerEvents, *tx.SchedulerEvent)
+	}
+
+	return s.persist()
+}
+
 func (s *Storage) Log(subsystem, level, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
