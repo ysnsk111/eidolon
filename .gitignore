@@ -33,6 +33,7 @@ dist/
 bin/
 build/
 coverage/
+*.tar.gz
 
 # Editors & OS
 .vscode/
