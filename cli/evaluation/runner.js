@@ -66,7 +66,7 @@ export async function runEvaluation({
   // If no blind test samples were available (e.g. tiny input chat), synthesize evaluation calibration sample
   if (sampleResults.length === 0) {
     const fallbackContext = [{ sender: 'User', content: '在干嘛呢？' }];
-    const fallbackTarget = (languageModel.openers || ['没干嘛，在听歌~'])[0];
+    const fallbackTarget = (languageModel.openers && languageModel.openers.length > 0 ? languageModel.openers[0] : null) || '没干嘛，在听歌~';
     const fallbackCandidate = '没干嘛呀，发呆呢~';
 
     const metrics = calculateSampleMetrics({
