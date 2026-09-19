@@ -7,7 +7,24 @@ export function parseJsonChat(filePath, options = {}) {
 }
 
 export function parseJsonString(jsonString, options = {}) {
-  const parsed = JSON.parse(jsonString);
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonString);
+  } catch (err) {
+    const lines = jsonString.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const lineObjs = [];
+    for (const line of lines) {
+      try {
+        lineObjs.push(JSON.parse(line));
+      } catch (_) {}
+    }
+    if (lineObjs.length > 0) {
+      parsed = lineObjs;
+    } else {
+      throw err;
+    }
+  }
+
   const rawMessages = [];
 
   // Format 1: Official Telegram Desktop export format

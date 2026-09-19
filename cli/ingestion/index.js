@@ -16,6 +16,7 @@ export async function ingestChatFile(filePath, options = {}) {
     case '.pdf':
       return await parsePdfChat(filePath, options);
     case '.json':
+    case '.jsonl':
       return parseJsonChat(filePath, options);
     case '.html':
     case '.htm':
