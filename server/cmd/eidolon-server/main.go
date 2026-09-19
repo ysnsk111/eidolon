@@ -45,7 +45,7 @@ type Config struct {
 }
 
 func main() {
-	fmt.Println(`
+	fmt.Print(`
   ███████╗██╗██████╗  ██████╗ ██╗      ██████╗ ███╗   ██╗
   ██╔════╝██║██╔══██╗██╔═══██╗██║     ██╔═══██╗████╗  ██║
   █████╗  ██║██║  ██║██║   ██║██║     ██║   ██║██╔██╗ ██║
@@ -104,7 +104,6 @@ func main() {
 	// 4. Initialize Scheduler
 	sched := scheduler.NewScheduler(scheduler.Config{
 		BaseDelayMs:       2500,
-		TypingSpeedCpm:    180,
 		DoubleMessageProb: 0.08,
 	})
 
