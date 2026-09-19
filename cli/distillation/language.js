@@ -68,6 +68,50 @@ export function extractLanguageFingerprint(messages, targetSpeaker) {
   const bigrams = {};
   const trigrams = {};
 
+  // 4. Chinese Modal Particles & Tone Words (Section 25)
+  const modalParticles = ['啊', '呀', '呢', '嘛', '吧', '诶', '欸', '啦', '哦', '嗷', '唔'];
+  const modalParticleCounts = {};
+  let messagesWithModalParticle = 0;
+  for (const p of modalParticles) modalParticleCounts[p] = 0;
+
+  // 5. Repetition Patterns (e.g. 哈哈哈, 啊啊啊, 好好好, 不是不是)
+  const repetitionPatterns = {};
+
+  // 6. Message Structure Metrics
+  let singleLineCount = 0;
+  let multiLineCount = 0;
+  let bulletCount = 0;
+
+  for (const t of texts) {
+    let hasModal = false;
+    for (const p of modalParticles) {
+      if (t.includes(p)) {
+        modalParticleCounts[p]++;
+        hasModal = true;
+      }
+    }
+    if (hasModal) messagesWithModalParticle++;
+
+    // Repetition detector
+    const repMatches = t.match(/([\u4e00-\u9fa5a-zA-Z])\1{2,}|([\u4e00-\u9fa5]{2})\2+/g);
+    if (repMatches) {
+      for (const rm of repMatches) {
+        repetitionPatterns[rm] = (repetitionPatterns[rm] || 0) + 1;
+      }
+    }
+
+    // Structure
+    if (t.includes('\n')) {
+      multiLineCount++;
+      if (/^[•\-\*0-9\.]/m.test(t)) bulletCount++;
+    } else {
+      singleLineCount++;
+    }
+  }
+
+  const topRepetitions = getTopK(repetitionPatterns, 10);
+
+  // 7. Vocabulary Frequency & N-Grams
   for (const t of texts) {
     const tokens = tokenize(t);
     for (let i = 0; i < tokens.length; i++) {
@@ -90,10 +134,10 @@ export function extractLanguageFingerprint(messages, targetSpeaker) {
   const topBigrams = getTopK(bigrams, 30);
   const topTrigrams = getTopK(trigrams, 20);
 
-  // 5. Catchphrases & Habitual Phrases Extraction
+  // 8. Catchphrases & Habitual Phrases Extraction
   const catchphrases = extractCatchphrases(texts, vocabulary, bigrams);
 
-  // 6. Conversation Openers and Closers
+  // 9. Conversation Openers and Closers
   const { openers, closers } = extractOpenersAndClosers(messages, targetSpeaker);
 
   return {
@@ -115,6 +159,18 @@ export function extractLanguageFingerprint(messages, targetSpeaker) {
       capitalization_rate: round(capitalizationCount / totalCount, 4),
       bilingual_mix_rate: round(englishChineseMixCount / totalCount, 4),
       number_rate: round(numberUsageCount / totalCount, 4),
+    },
+    chinese_particles: {
+      overall_particle_rate: round(messagesWithModalParticle / totalCount, 4),
+      frequencies: modalParticleCounts,
+    },
+    repetition_habits: {
+      top_patterns: topRepetitions,
+    },
+    message_structure: {
+      single_line_rate: round(singleLineCount / totalCount, 4),
+      multi_line_rate: round(multiLineCount / totalCount, 4),
+      bullet_like_rate: round(bulletCount / totalCount, 4),
     },
     vocabulary_profile: {
       unique_words_count: Object.keys(vocabulary).length,

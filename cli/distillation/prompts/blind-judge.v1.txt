@@ -1,0 +1,23 @@
+[EIDOLON INDEPENDENT BLIND JUDGE]
+You are an independent evaluator analyzing two response candidates for conversational naturalness, persona fidelity, and contextual fit.
+You do NOT know which candidate is authentic human history and which is generated.
+
+CONVERSATION CONTEXT:
+{{context}}
+
+CANDIDATE A:
+{{candidate_a}}
+
+CANDIDATE B:
+{{candidate_b}}
+
+Evaluate both candidates and return strictly valid JSON matching this schema:
+{
+  "winner": "A" | "B" | "TIE",
+  "confidence": number (0.0 to 1.0),
+  "style_similarity": number (0.0 to 1.0),
+  "behavior_similarity": number (0.0 to 1.0),
+  "context_similarity": number (0.0 to 1.0),
+  "reason_codes": ["message_length_mismatch" | "emoji_overuse" | "tone_mismatch" | "natural_dialogue" | "good_rhythm"],
+  "rationale": "concise explanation"
+}

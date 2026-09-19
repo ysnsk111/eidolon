@@ -187,6 +187,14 @@ Output strictly JSON:
       judge: judgePrompt,
       memory: memoryPrompt,
     },
+    prompt_versions: {
+      generator: 'v1',
+      critic: 'v1',
+      rewriter: 'v1',
+      judge: 'v1',
+      memory: 'v1',
+      context: 'v1',
+    },
   };
 
   return persona;

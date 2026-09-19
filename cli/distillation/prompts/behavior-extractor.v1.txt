@@ -1,0 +1,21 @@
+From these pre-computed interaction records, summarize the observed response behavior patterns.
+
+RULES:
+- DO NOT invent data.
+- DO NOT use general knowledge or common sense to fill gaps.
+- ONLY summarize patterns visible in the provided records.
+- If a situation has fewer than 3 examples, mark confidence as "low".
+
+Output: JSON array of objects:
+[{
+  "situation": string,
+  "observed_strategy": string,
+  "evidence_count": number,
+  "confidence": "high" | "medium" | "low",
+  "representative_examples": [string],
+  "statistical": {
+    "emoji_probability": number,
+    "short_reply_probability": number,
+    "follow_up_probability": number
+  }
+}]

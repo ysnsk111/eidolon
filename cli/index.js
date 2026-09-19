@@ -93,4 +93,11 @@ program
   .description('Display complete EIDOLON runtime and subsystem status')
   .action(statusCommand);
 
+// 11. validate
+import { validateCommand } from './commands/validate.js';
+program
+  .command('validate <packagePath>')
+  .description('Validate an .eidolon bundle or directory against schemas')
+  .action(validateCommand);
+
 program.parse(process.argv);
