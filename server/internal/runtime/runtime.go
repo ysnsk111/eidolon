@@ -12,6 +12,7 @@ import (
 
 	"eidolon/server/internal/memory"
 	"eidolon/server/internal/persona"
+	"eidolon/server/internal/relationship"
 	"eidolon/server/internal/scheduler"
 	"eidolon/server/internal/storage"
 )
@@ -29,6 +30,7 @@ type Orchestrator struct {
 	personaMgr *persona.PersonaManager
 	memoryEng  *memory.Engine
 	sched      *scheduler.Scheduler
+	relEngine  *relationship.Engine
 	llmCfg     LLMConfig
 	client     *http.Client
 }
@@ -45,6 +47,7 @@ func NewOrchestrator(
 		personaMgr: personaMgr,
 		memoryEng:  memoryEng,
 		sched:      sched,
+		relEngine:  relationship.NewEngine(),
 		llmCfg:     llmCfg,
 		client:     &http.Client{Timeout: 45 * time.Second},
 	}
@@ -58,6 +61,10 @@ func (o *Orchestrator) GetScheduler() *scheduler.Scheduler {
 	return o.sched
 }
 
+func (o *Orchestrator) GetRelationshipEngine() *relationship.Engine {
+	return o.relEngine
+}
+
 // CriticResult holds the output of the style critic pipeline.
 // P0-9 Fix: critic_score is never fabricated; if not run, status is "not_run" and score is nil.
 type CriticResult struct {
@@ -69,12 +76,13 @@ type CriticResult struct {
 }
 
 type GenerationResult struct {
-	FinalMessage string                   `json:"final_message"`
-	Schedule     scheduler.ScheduleResult `json:"schedule"`
-	CandidateA   string                   `json:"candidate_a"`
-	CandidateB   string                   `json:"candidate_b"`
-	CandidateC   string                   `json:"candidate_c"`
-	Critic       CriticResult             `json:"critic"`
+	FinalMessage string                    `json:"final_message"`
+	Schedule     scheduler.ScheduleResult  `json:"schedule"`
+	CandidateA   string                    `json:"candidate_a"`
+	CandidateB   string                    `json:"candidate_b"`
+	CandidateC   string                    `json:"candidate_c"`
+	Critic       CriticResult              `json:"critic"`
+	Plan         relationship.ResponsePlan `json:"plan"`
 }
 
 func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*GenerationResult, error) {
@@ -100,10 +108,22 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	// 2. Context & Memory Retrieval
 	retrieval := o.memoryEng.RetrieveContext(personaID, sessionID, userContent)
 
-	// 3. Build Prompt Context
+	// 3. L4 Relationship State Retrieval & Perception (Sections 1, 2, 4, 14)
+	relState := o.relEngine.GetOrCreateState(sessionID, userID)
+	if storedJSON, err := o.store.GetRelationshipState(sessionID); err == nil && storedJSON != "" {
+		if deserialized, dErr := relationship.DeserializeState(storedJSON); dErr == nil {
+			*relState = *deserialized
+		}
+	}
+	perception := o.relEngine.Perceive(userContent, retrieval.WorkingContext)
+	o.relEngine.Step(relState, perception)
+	plan := o.relEngine.PlanResponse(relState, perception)
+
+	// 4. Build Prompt Context
 	systemPrompt := activeP.Persona.SystemPrompts.Generator
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString(systemPrompt)
+	contextBuilder.WriteString(o.relEngine.BuildPromptDirective(relState, plan))
 	contextBuilder.WriteString("\n\n[AUTHENTIC MEMORIES & EPISODES]\n")
 	for _, ep := range retrieval.RelevantEpisodes {
 		contextBuilder.WriteString(fmt.Sprintf("- %s\n", ep))
@@ -176,9 +196,16 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	}
 	memDeltas := o.memoryEng.ExtractMemoryDeltas(personaID, sessionID, userContent, finalResponse, extractor)
 
-	// 8. Dynamic Response Scheduler configured with active persona's latency model (Section 14)
+	// 8. Dynamic Response Scheduler configured with active persona and L4 relational factors (Sections 7, 8, 9, 14)
 	o.sched.UpdateConfig(activeP.GetSchedulerConfig())
-	scheduleRes := o.sched.CalculateSchedule(finalResponse, len(retrieval.WorkingContext) > 4)
+	scheduleRes := o.sched.CalculateScheduleAdvanced(finalResponse, scheduler.SchedulingContext{
+		RapidConversation: len(retrieval.WorkingContext) > 4,
+		Warmth:            relState.Relationship.Warmth,
+		Irritation:        relState.Relationship.Irritation,
+		Engagement:        relState.Relationship.Engagement,
+		IsQuestion:        perception.Intent == "question",
+		TargetCount:       plan.MessageCount,
+	})
 
 	// 9. Prepare Outgoing message and Scheduler event
 	outMsg := storage.MessageItem{
@@ -203,14 +230,16 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// 10. Atomic Commit of Interaction Transaction (Section 12 & 21)
-	// Bundles incoming message, memory deltas, outgoing message, and scheduler event
+	// 10. Atomic Commit of Interaction Transaction (Section 12, 18 & 21)
+	// Bundles incoming message, memory deltas, outgoing message, scheduler event, and L4 relationship state
 	// into a single SQLite transaction, guaranteeing zero partial-state tears.
+	relJSON, _ := relState.Serialize()
 	tx := storage.InteractionTransaction{
-		InMessage:      &inMsg,
-		Memories:       memDeltas,
-		OutMessage:     &outMsg,
-		SchedulerEvent: &schedEvt,
+		InMessage:             &inMsg,
+		Memories:              memDeltas,
+		OutMessage:            &outMsg,
+		SchedulerEvent:        &schedEvt,
+		RelationshipStateJSON: &relJSON,
 	}
 	if err := o.store.CommitInteraction(tx); err != nil {
 		return nil, fmt.Errorf("failed to commit interaction transaction: %w", err)
@@ -224,6 +253,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		CandidateB:   candB,
 		CandidateC:   candC,
 		Critic:       criticResult,
+		Plan:         plan,
 	}, nil
 }
 

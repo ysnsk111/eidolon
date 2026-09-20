@@ -1,14 +1,15 @@
-# EIDOLON v1.1.0
+# EIDOLON v1.2.0
 
 <p align="center">
-  <strong>Persona Distillation & Memory Runtime</strong><br>
-  <em>«Preserve expression. Reconstruct context. Measure fidelity.»</em>
+  <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
+  <em>«Preserve expression. Reconstruct context. Measure fidelity. Simulate authentic presence.»</em>
 </p>
 
 <p align="center">
   <a href="#-简体中文"><strong>简体中文</strong></a> •
   <a href="#-english"><strong>English</strong></a> •
-  <a href="#-日本語"><strong>日本語</strong></a>
+  <a href="#-日本語"><strong>日本語</strong></a> •
+  <a href="docs/human-simulation-algorithm.md"><strong>真人模拟算法规范 (Algorithm Spec)</strong></a>
 </p>
 
 <p align="center">
@@ -16,8 +17,8 @@
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
   <img src="https://img.shields.io/badge/SQLite-Native%20ACID-003B57.svg" alt="SQLite: Native ACID">
-  <img src="https://img.shields.io/badge/Tests-34%20Passed-brightgreen.svg" alt="Tests: 34 Passed">
-  <img src="https://img.shields.io/badge/DSI-Deterministic%20v1.1-purple.svg" alt="DSI: Deterministic v1.1">
+  <img src="https://img.shields.io/badge/L4%20State-BSM%20Engine-ff69b4.svg" alt="L4 State: BSM Engine">
+  <img src="https://img.shields.io/badge/Tests-Passed-brightgreen.svg" alt="Tests: Passed">
 </p>
 
 ---
@@ -121,6 +122,34 @@ $$\text{DSI} = L \times 0.20 + S \times 0.20 + B \times 0.25 + C \times 0.15 + H
 - $\text{Behavior Similarity} \ge 0.75$
 - $\text{Style Similarity} \ge 0.80$
 - $\text{Lexical Similarity} \ge 0.80$
+
+---
+
+### 4. L4 动态关系状态与真人模拟算法 (L4 Relationship & Simulation)
+
+> 详见完整数学推导与技术规范文档：[docs/human-simulation-algorithm.md](docs/human-simulation-algorithm.md)
+
+v1.2.0 将 Telegram 回复层全面升级为**状态驱动的行为模拟器**，彻底摒弃简单的“Prompt $\to$ 发消息”：
+
+1. **L4 连续关系状态向量**：
+   - 包含 8 维连续参数：`affinity` (好感), `trust` (信任), `warmth` (温柔), `irritation` (烦躁), `hurt` (受创), `engagement` (聊天意愿), `tension` (紧张), `initiative` (主动性)。
+   - 8 维连续情绪动力学（愤怒、烦躁、依恋、伤心、开心、害羞、孤独、兴奋）。
+2. **阻尼微分更新与时间衰减**：
+   - 惯性转移方程：$S(t+1) = \text{clamp}(\lambda S(t) + W \cdot X(t) + \epsilon, 0, 1)$，惯性系数 $\lambda = 0.88$ 保证情绪真实渐变。
+   - 时间衰减半衰期：烦躁恢复 $\tau=6h$、情感伤害恢复 $\tau=24h$、紧绷恢复 $\tau=4h$。
+3. **道歉与和解数学模型**：
+   - 识别真诚道歉强度 $A$ 后：$hurt_{new} = hurt \times (1 - 0.45A), trust_{new} = trust + 0.12A$。
+   - 状态机经由 `CONFLICT -> RECOVERING -> DISTANT -> WARM -> NORMAL` 平滑回暖，展现余气未消但逐渐软化的真实质感。
+4. **多因子交互延时与消息断句**：
+   - 对数正态延迟：$\mu = \text{baseMedian} \times \text{RelFactor} \times \text{EmoFactor} \times \text{IntentFactor}$。
+   - 消息分裂调度：依据标点将大段文本拆分成 2~3 条自然发送，并带有打字态与子间隔。
+5. **撤回与“先发后悔”行为链**：
+   - 依据尴尬度、冲动度与信任度计算 $P(\text{delete}) = \sigma(z)$，触发后等待 $1.5s \sim 2.5s$ 自动调用 Telegram `deleteMessage` 撤回并跟帖。
+6. **Telegram `/start` 启动配对命令**：
+   - 用户发送 `/start` 时，机器人自动将其 Telegram ID 加入白名单并持久化写入 `config.json`；
+   - 自动调用 `deleteMessage` 物理删除用户发送的 `/start` 消息；
+   - **无其他多余**：静默完成配对，不发送任何冗余文本；后续消息（如 `123`）鉴权通过并获得真实智能回复。
+   - 内置回退伴侣人格（`Ms.Yawen`），确保未加载专属蒸馏包时也能即时对话。
 
 ---
 

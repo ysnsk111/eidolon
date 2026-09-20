@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,18 +25,20 @@ type Config struct {
 	PollTimeout    int      `json:"poll_timeout"`
 	SimulateTyping bool     `json:"simulate_typing"`
 	LogSalt        string   `json:"log_salt"`
+	ConfigPath     string   `json:"config_path"`
 }
 
 type BotService struct {
-	cfg           Config
+	cfg            Config
 	orch           *runtime.Orchestrator
-	store         *storage.Storage
-	allowedUsers  map[string]bool
-	client        *http.Client
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
-	queuesMu      sync.Mutex
-	sessionQueues map[int64]chan *Message
+	store          *storage.Storage
+	allowedUsersMu sync.RWMutex
+	allowedUsers   map[string]bool
+	client         *http.Client
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
+	queuesMu       sync.Mutex
+	sessionQueues  map[int64]chan *Message
 }
 
 type Update struct {
@@ -69,12 +72,76 @@ func NewBotService(cfg Config, orch *runtime.Orchestrator, store *storage.Storag
 
 	return &BotService{
 		cfg:           cfg,
-		orch:           orch,
-		store:          store,
+		orch:          orch,
+		store:         store,
 		allowedUsers:  allowedMap,
 		client:        &http.Client{Timeout: 45 * time.Second},
 		stopCh:        make(chan struct{}),
 		sessionQueues: make(map[int64]chan *Message),
+	}
+}
+
+func (b *BotService) SetHTTPClient(client *http.Client) {
+	b.client = client
+}
+
+func (b *BotService) isUserAllowed(userIDStr string) bool {
+	b.allowedUsersMu.RLock()
+	defer b.allowedUsersMu.RUnlock()
+	return b.allowedUsers[userIDStr]
+}
+
+func (b *BotService) allowUser(userIDStr string) {
+	b.allowedUsersMu.Lock()
+	alreadyAllowed := b.allowedUsers[userIDStr]
+	b.allowedUsers[userIDStr] = true
+	b.allowedUsersMu.Unlock()
+
+	if alreadyAllowed {
+		return
+	}
+
+	b.store.Log("telegram", "INFO", fmt.Sprintf("User paired successfully: %s", hashUserID(userIDStr, b.cfg.LogSalt)))
+
+	if b.cfg.ConfigPath != "" {
+		b.persistAllowedUser(userIDStr)
+	}
+}
+
+func (b *BotService) persistAllowedUser(userIDStr string) {
+	data, err := os.ReadFile(b.cfg.ConfigPath)
+	if err != nil {
+		return
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return
+	}
+
+	botMap, ok := rawMap["bot"].(map[string]interface{})
+	if !ok {
+		botMap = make(map[string]interface{})
+		rawMap["bot"] = botMap
+	}
+
+	existingAllowed, _ := botMap["allowedUsers"].([]interface{})
+	exists := false
+	var updatedList []string
+	for _, item := range existingAllowed {
+		str := fmt.Sprintf("%v", item)
+		updatedList = append(updatedList, str)
+		if str == userIDStr {
+			exists = true
+		}
+	}
+	if !exists {
+		updatedList = append(updatedList, userIDStr)
+		botMap["allowedUsers"] = updatedList
+		if updatedBytes, err := json.MarshalIndent(rawMap, "", "  "); err == nil {
+			_ = os.WriteFile(b.cfg.ConfigPath, updatedBytes, 0600)
+			b.store.Log("telegram", "INFO", fmt.Sprintf("Persisted paired user to config file at %s", b.cfg.ConfigPath))
+		}
 	}
 }
 
@@ -123,9 +190,11 @@ func (b *BotService) pollLoop() {
 			}
 
 			userIDStr := strconv.FormatInt(u.Message.From.ID, 10)
+			trimmedText := strings.TrimSpace(u.Message.Text)
+			isStartCmd := strings.HasPrefix(trimmedText, "/start")
 
-			if !b.allowedUsers[userIDStr] {
-				// P1: do not log raw user IDs
+			// Check user authorization; allow /start commands through to trigger pairing
+			if !b.isUserAllowed(userIDStr) && !isStartCmd {
 				b.store.Log("telegram", "WARN", "Ignored message from unauthorized user")
 				continue
 			}
@@ -188,16 +257,20 @@ func (b *BotService) handleIncoming(msg *Message) {
 
 	trimmedText := strings.TrimSpace(msg.Text)
 
-	// Command Handler: /start
+	// Command Handler: /start (Startup Pairing Command)
+	// Automatically pairs user, deletes user's /start message, and outputs nothing redundant ("无其他多余").
 	if strings.HasPrefix(trimmedText, "/start") {
-		activeP := b.orch.GetPersonaManager().GetActivePersona()
-		var welcome string
-		if activeP != nil {
-			welcome = fmt.Sprintf("👋 你好！我是 %s。\n\n✨ EIDOLON 仿生记忆与人格运行时已激活\n• 人格包: %s\n• 仿真延时: 开启 (基于真实语料分布)\n• 记忆提取与持久化: 正常运行", activeP.Persona.Name, activeP.ID)
+		// 1. Perform Pairing: add user to allowed list & persist config
+		b.allowUser(userIDStr)
+
+		// 2. Automatically delete user's /start command message
+		if err := b.deleteMessage(msg.Chat.ID, msg.MessageID); err != nil {
+			b.store.Log("telegram", "WARN", fmt.Sprintf("Failed to delete /start command message: %v", err))
 		} else {
-			welcome = fmt.Sprintf("👋 你好！EIDOLON Telegram 机器人连接正常。\n\n• 用户鉴权: 已通过 (ID: %s)\n• 交互模式: 仿人类动态延时与输入模拟\n• 当前状态: 待配置 / 等待激活人格模型\n\n提示：在控制台上传语料并运行 `eidolon distill`，或执行 `eidolon persona activate <id>` 即可开始对话。", userIDStr)
+			b.store.Log("telegram", "INFO", fmt.Sprintf("Successfully deleted /start command message id=%d chat=%d", msg.MessageID, msg.Chat.ID))
 		}
-		_ = b.sendMessage(msg.Chat.ID, welcome, msg.MessageID)
+
+		// 3. "无其他多余" - Do not send any greeting or other messages
 		return
 	}
 
@@ -212,7 +285,7 @@ func (b *BotService) handleIncoming(msg *Message) {
 			statusText = fmt.Sprintf("📊 EIDOLON 运行时状态:\n• 激活人格: 无 (待配置)\n• 仿真输入模拟: %v\n• 会话 ID: %s",
 				b.cfg.SimulateTyping, sessionID)
 		}
-		_ = b.sendMessage(msg.Chat.ID, statusText, msg.MessageID)
+		_, _ = b.sendMessage(msg.Chat.ID, statusText, msg.MessageID)
 		return
 	}
 
@@ -221,12 +294,12 @@ func (b *BotService) handleIncoming(msg *Message) {
 	if err != nil {
 		b.store.Log("telegram", "ERROR", fmt.Sprintf("Orchestrator error session=%s: %v", sessionID, err))
 		if strings.Contains(err.Error(), "no active persona") {
-			_ = b.sendMessage(msg.Chat.ID, "⚠️ EIDOLON 当前尚未激活人格模型。\n请在控制台执行 `eidolon persona activate <persona_id>` 激活人格后再与我对话。", msg.MessageID)
+			_, _ = b.sendMessage(msg.Chat.ID, "⚠️ EIDOLON 当前尚未激活人格模型。\n请在控制台执行 `eidolon persona activate <persona_id>` 激活人格后再与我对话。", msg.MessageID)
 		}
 		return
 	}
 
-	// Dynamic Human-like Lifecycle Timing:
+	// Dynamic Human-like Lifecycle Timing (Sections 7, 8, 9):
 	// Phase 1: Reading/thinking delay (no typing indicator)
 	totalDelay := res.Schedule.TotalDelayMs
 	typingDuration := res.Schedule.TypingDurationMs
@@ -258,16 +331,56 @@ func (b *BotService) handleIncoming(msg *Message) {
 		time.Sleep(time.Duration(totalDelay) * time.Millisecond)
 	}
 
-	// Phase 3: Complete message dispatch (with double message support)
-	if res.Schedule.ShouldDoubleMessage && res.Schedule.DoubleMessagePart1 != "" {
-		_ = b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart1, msg.MessageID)
+	// Phase 3: Complete message dispatch (with multi-message & double-message support)
+	var lastSentID int
+	if len(res.Schedule.Parts) > 1 {
+		for i, part := range res.Schedule.Parts {
+			replyID := 0
+			if i == 0 {
+				replyID = msg.MessageID
+			}
+			id, err := b.sendMessage(msg.Chat.ID, part, replyID)
+			if err == nil {
+				lastSentID = id
+			}
+			if i < len(res.Schedule.Parts)-1 {
+				gapMs := 1000
+				if len(res.Schedule.InterMessageGapsMs) > i && res.Schedule.InterMessageGapsMs[i] > 0 {
+					gapMs = res.Schedule.InterMessageGapsMs[i]
+				}
+				if b.cfg.SimulateTyping {
+					_ = b.sendChatAction(msg.Chat.ID, "typing")
+				}
+				time.Sleep(time.Duration(gapMs) * time.Millisecond)
+			}
+		}
+	} else if res.Schedule.ShouldDoubleMessage && res.Schedule.DoubleMessagePart1 != "" {
+		id1, _ := b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart1, msg.MessageID)
+		lastSentID = id1
 		if b.cfg.SimulateTyping {
 			_ = b.sendChatAction(msg.Chat.ID, "typing")
 		}
 		time.Sleep(1200 * time.Millisecond)
-		_ = b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart2, 0)
+		id2, _ := b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart2, 0)
+		lastSentID = id2
 	} else {
-		_ = b.sendMessage(msg.Chat.ID, res.FinalMessage, msg.MessageID)
+		id, _ := b.sendMessage(msg.Chat.ID, res.FinalMessage, msg.MessageID)
+		lastSentID = id
+	}
+
+	// Phase 4: PostSendBehavior (Retraction / Regret / 先发后悔 - Sections 12 & 13)
+	if res.Plan.ShouldDelete && lastSentID > 0 {
+		delay := res.Plan.DeleteDelayMs
+		if delay <= 0 {
+			delay = 1800
+		}
+		time.Sleep(time.Duration(delay) * time.Millisecond)
+		_ = b.deleteMessage(msg.Chat.ID, lastSentID)
+		b.store.Log("telegram", "INFO", fmt.Sprintf("Post-send regret triggered: deleted message id=%d chat=%d", lastSentID, msg.Chat.ID))
+		if res.Plan.FollowupText != "" {
+			time.Sleep(600 * time.Millisecond)
+			_, _ = b.sendMessage(msg.Chat.ID, res.Plan.FollowupText, 0)
+		}
 	}
 }
 
@@ -316,7 +429,7 @@ func (b *BotService) sendChatAction(chatID int64, action string) error {
 	return nil
 }
 
-func (b *BotService) sendMessage(chatID int64, text string, replyToMsgID int) error {
+func (b *BotService) sendMessage(chatID int64, text string, replyToMsgID int) (int, error) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.cfg.Token)
 	reqMap := map[string]interface{}{
 		"chat_id": chatID,
@@ -332,14 +445,46 @@ func (b *BotService) sendMessage(chatID int64, text string, replyToMsgID int) er
 	resp, err := b.client.Post(url, "application/json", bytes.NewBuffer(payload))
 	if err != nil {
 		b.store.Log("telegram", "ERROR", fmt.Sprintf("sendMessage network error chat=%d: %v", chatID, err))
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		b.store.Log("telegram", "ERROR", fmt.Sprintf("sendMessage HTTP %d to chat=%d: %s", resp.StatusCode, chatID, string(body)))
-		return fmt.Errorf("telegram API HTTP %d", resp.StatusCode)
+		return 0, fmt.Errorf("telegram API HTTP %d", resp.StatusCode)
+	}
+
+	var resObj struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			MessageID int `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &resObj); err == nil && resObj.OK {
+		return resObj.Result.MessageID, nil
+	}
+
+	return 0, nil
+}
+
+func (b *BotService) deleteMessage(chatID int64, messageID int) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteMessage", b.cfg.Token)
+	payload, _ := json.Marshal(map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	})
+	resp, err := b.client.Post(url, "application/json", bytes.NewBuffer(payload))
+	if err != nil {
+		b.store.Log("telegram", "ERROR", fmt.Sprintf("deleteMessage network error chat=%d msg=%d: %v", chatID, messageID, err))
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		b.store.Log("telegram", "WARN", fmt.Sprintf("deleteMessage HTTP %d chat=%d msg=%d: %s", resp.StatusCode, chatID, messageID, string(body)))
+		return fmt.Errorf("telegram API deleteMessage HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

@@ -122,3 +122,43 @@ func TestScheduler_RapidConversationReduction(t *testing.T) {
 	_ = resNormal
 	_ = resRapid
 }
+
+func TestScheduler_AdvancedInteractiveFactors(t *testing.T) {
+	cfg := scheduler.Config{
+		BaseDelayMs: 3000,
+		MinDelayMs:  500,
+		MaxDelayMs:  20000,
+		LatencyModel: scheduler.LatencyModel{
+			Medium: scheduler.LatencyBucket{MedianMs: 3000, P90Ms: 5000, Samples: 10},
+		},
+	}
+	sched := scheduler.NewScheduler(cfg)
+
+	// Compare high warmth vs high irritation
+	warmthCtx := scheduler.SchedulingContext{
+		Warmth:     0.9,
+		Irritation: 0.0,
+		Engagement: 0.8,
+	}
+	irritatedCtx := scheduler.SchedulingContext{
+		Warmth:     0.1,
+		Irritation: 0.8,
+		Engagement: 0.3,
+	}
+
+	warmthSum, irritatedSum := 0, 0
+	trials := 25
+	text := "今天中午我们一起去吃豚骨拉面吧，那家新开的味道特别地道！"
+	for i := 0; i < trials; i++ {
+		warmthSum += sched.CalculateScheduleAdvanced(text, warmthCtx).TotalDelayMs
+		irritatedSum += sched.CalculateScheduleAdvanced(text, irritatedCtx).TotalDelayMs
+	}
+
+	avgWarmth := warmthSum / trials
+	avgIrritated := irritatedSum / trials
+
+	if avgWarmth >= avgIrritated {
+		t.Errorf("Warm relationship latency (%d) should be significantly lower than irritated latency (%d)", avgWarmth, avgIrritated)
+	}
+}
+

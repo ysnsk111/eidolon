@@ -52,7 +52,7 @@ func main() {
   ██╔══╝  ██║██║  ██║██║   ██║██║     ██║   ██║██║╚██╗██║
   ███████╗██║██████╔╝╚██████╔╝███████╗╚██████╔╝██║ ╚████║
   ╚══════╝╚═╝╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝
-  Persona Distillation & Memory Runtime v1.1.0
+  Persona Distillation & Memory Runtime v1.2.0
   «Preserve expression. Reconstruct context. Measure fidelity.»
 `)
 
@@ -128,6 +128,7 @@ func main() {
 		AllowedUsers:   cfg.Bot.AllowedUsers,
 		PollTimeout:    cfg.Bot.PollTimeout,
 		SimulateTyping: cfg.Bot.SimulateTyping,
+		ConfigPath:     configPath,
 	}, orch, store)
 
 	if err := botService.Start(); err != nil {

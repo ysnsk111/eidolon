@@ -38,13 +38,25 @@ type Config struct {
 
 // ScheduleResult is returned by CalculateSchedule.
 type ScheduleResult struct {
-	TotalDelayMs        int    `json:"total_delay_ms"`
-	TypingDurationMs    int    `json:"typing_duration_ms"`
-	JitterMs            int    `json:"jitter_ms"`
-	ShouldDoubleMessage bool   `json:"should_double_message"`
-	DoubleMessagePart1  string `json:"double_message_part1,omitempty"`
-	DoubleMessagePart2  string `json:"double_message_part2,omitempty"`
-	Bucket              string `json:"bucket"` // "short"|"medium"|"long", for logging
+	TotalDelayMs        int      `json:"total_delay_ms"`
+	TypingDurationMs    int      `json:"typing_duration_ms"`
+	JitterMs            int      `json:"jitter_ms"`
+	ShouldDoubleMessage bool     `json:"should_double_message"`
+	DoubleMessagePart1  string   `json:"double_message_part1,omitempty"`
+	DoubleMessagePart2  string   `json:"double_message_part2,omitempty"`
+	Parts               []string `json:"parts,omitempty"`
+	InterMessageGapsMs  []int    `json:"inter_message_gaps_ms,omitempty"`
+	Bucket              string   `json:"bucket"` // "short"|"medium"|"long", for logging
+}
+
+// SchedulingContext holds relational and contextual parameters for human-like timing (Sections 7, 8, 9).
+type SchedulingContext struct {
+	RapidConversation bool
+	Warmth            float64 // 0.0 ~ 1.0
+	Irritation        float64 // 0.0 ~ 1.0
+	Engagement        float64 // 0.0 ~ 1.0
+	IsQuestion        bool
+	TargetCount       int // 1, 2, 3
 }
 
 // Scheduler computes human-like delays based on observed response latency distributions.
@@ -103,17 +115,18 @@ func (s *Scheduler) GetConfig() Config {
 }
 
 // CalculateSchedule computes human-like delay using the observed latency model.
-//
-// Algorithm:
-//  1. Bucket the reply by length (short / medium / long)
-//  2. Use observed median_ms from LatencyModel for that bucket
-//  3. Add small Gaussian jitter
-//  4. Clamp to [MinDelayMs, MaxDelayMs]
-//
-// NOTE: TypingSpeedCpm is intentionally NOT used.
-// Chat timestamps can measure reply latency (perception + think + type + send),
-// but not pure typing speed. Fabricating 180 CPM overstates predictability.
 func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) ScheduleResult {
+	return s.CalculateScheduleAdvanced(replyText, SchedulingContext{
+		RapidConversation: rapidConversation,
+		Warmth:            0.5,
+		Irritation:        0.0,
+		Engagement:        0.7,
+	})
+}
+
+// CalculateScheduleAdvanced computes multi-factor interactive human-like delay (Sections 7 & 8).
+// Latency = Base * RelationshipFactor * EmotionFactor * IntentFactor * RandomFactor
+func (s *Scheduler) CalculateScheduleAdvanced(replyText string, ctx SchedulingContext) ScheduleResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -122,26 +135,45 @@ func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) 
 	// 1. Determine length bucket and select base latency
 	bucket, baseMedian := s.selectLatencyBucket(charCount)
 
-	// 2. Rapid conversation shortens expected latency
-	if rapidConversation && baseMedian > 1000 {
-		baseMedian = int(math.Max(float64(s.cfg.MinDelayMs), float64(baseMedian)*0.75))
+	// 2. Multi-factor Interactive Latency (Section 8)
+	// RelationshipFactor = 1 - 0.25 * warmth
+	relFactor := math.Max(0.65, 1.0-0.25*ctx.Warmth)
+	// EmotionFactor = 1 + 0.8 * irritation
+	emoFactor := 1.0 + 0.80*ctx.Irritation
+	// IntentFactor: questions answered faster
+	intentFactor := 1.0
+	if ctx.IsQuestion {
+		intentFactor = 0.75
+	}
+	// Engagement factor: higher engagement reduces sluggishness
+	engageFactor := math.Max(0.75, 1.15-0.35*ctx.Engagement)
+
+	adjustedMedian := float64(baseMedian) * relFactor * emoFactor * intentFactor * engageFactor
+
+	// 3. Rapid conversation shortens expected latency
+	if ctx.RapidConversation && adjustedMedian > 1000 {
+		adjustedMedian = math.Max(float64(s.cfg.MinDelayMs), adjustedMedian*0.75)
 	}
 
-	// 3. Gaussian jitter: sigma ≈ 15% of base median, mean 0
-	sigma := math.Max(300, float64(baseMedian)*0.15)
+	// 4. Gaussian jitter: sigma ≈ 15% of adjusted median, mean 0
+	sigma := math.Max(250, adjustedMedian*0.15)
 	jitter := int(s.rng.NormFloat64() * sigma)
 
-	// 4. Total delay
-	rawTotal := baseMedian + jitter
+	// 5. Total delay clamped to safety bounds
+	rawTotal := int(adjustedMedian) + jitter
 	totalDelay := clamp(rawTotal, s.cfg.MinDelayMs, s.cfg.MaxDelayMs)
 
-	// 5. Typing indicator: 50-80% of total delay
+	// 6. Typing indicator: 50-80% of total delay
 	typingIndicatorDuration := clamp(int(float64(totalDelay)*0.65), 500, totalDelay)
 
-	// 6. Double-message check: naturally split at sentence or clause boundaries
+	// 7. Message Splitting Planner (Section 9)
 	shouldDouble := false
 	var part1, part2 string
-	if s.rng.Float64() < s.cfg.DoubleMessageProb && charCount > 20 {
+	var parts []string
+	var interGaps []int
+
+	wantSplit := ctx.TargetCount >= 2 || (s.rng.Float64() < s.cfg.DoubleMessageProb && charCount > 20)
+	if wantSplit && charCount > 15 {
 		runes := []rune(replyText)
 		mid := len(runes) / 2
 		bestSplit := -1
@@ -149,7 +181,7 @@ func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) 
 
 		// Priority 1: sentence ends (\n, 。, ！, !, ？, ?, ~)
 		primaryDelims := []rune{'\n', '。', '！', '!', '？', '?', '~'}
-		for i := 4; i < len(runes)-4; i++ {
+		for i := 3; i < len(runes)-3; i++ {
 			for _, d := range primaryDelims {
 				if runes[i] == d {
 					dist := int(math.Abs(float64(i - mid)))
@@ -163,7 +195,7 @@ func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) 
 
 		// Priority 2: commas (，, ,) if no sentence boundary found near middle
 		if bestSplit == -1 {
-			for i := 4; i < len(runes)-4; i++ {
+			for i := 3; i < len(runes)-3; i++ {
 				if runes[i] == '，' || runes[i] == ',' {
 					dist := int(math.Abs(float64(i - mid)))
 					if dist < minDist {
@@ -177,12 +209,19 @@ func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) 
 		if bestSplit > 0 {
 			p1 := strings.TrimSpace(string(runes[:bestSplit]))
 			p2 := strings.TrimSpace(string(runes[bestSplit:]))
-			if len([]rune(p1)) >= 4 && len([]rune(p2)) >= 4 {
+			if len([]rune(p1)) >= 2 && len([]rune(p2)) >= 2 {
 				shouldDouble = true
 				part1 = p1
 				part2 = p2
+				parts = []string{p1, p2}
+				gap := 800 + int(s.rng.Float64()*800) // 800ms ~ 1600ms
+				interGaps = []int{gap}
 			}
 		}
+	}
+
+	if len(parts) == 0 {
+		parts = []string{replyText}
 	}
 
 	return ScheduleResult{
@@ -192,6 +231,8 @@ func (s *Scheduler) CalculateSchedule(replyText string, rapidConversation bool) 
 		ShouldDoubleMessage: shouldDouble,
 		DoubleMessagePart1:  part1,
 		DoubleMessagePart2:  part2,
+		Parts:               parts,
+		InterMessageGapsMs:  interGaps,
 		Bucket:              bucket,
 	}
 }

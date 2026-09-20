@@ -83,10 +83,11 @@ type Stats struct {
 
 // InteractionTransaction aggregates incoming msg, memory deltas, outgoing msg, and scheduler event for atomic commit.
 type InteractionTransaction struct {
-	InMessage      *MessageItem
-	Memories       []MemoryItem
-	OutMessage     *MessageItem
-	SchedulerEvent *SchedulerEvent
+	InMessage             *MessageItem
+	Memories              []MemoryItem
+	OutMessage            *MessageItem
+	SchedulerEvent        *SchedulerEvent
+	RelationshipStateJSON *string
 }
 
 func NewStorage(dbPath string) (*Storage, error) {
@@ -180,6 +181,12 @@ func (s *Storage) initSchema() error {
 		level TEXT,
 		message TEXT,
 		timestamp TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS relationship_states (
+		session_id TEXT PRIMARY KEY,
+		state_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL
 	);
 	`
 	_, err := s.db.Exec(schema)
@@ -413,12 +420,57 @@ func (s *Storage) CommitInteraction(tx InteractionTransaction) error {
 		}
 	}
 
+	// 5. RelationshipState (L4 State persistence in atomic transaction)
+	if tx.RelationshipStateJSON != nil && *tx.RelationshipStateJSON != "" && tx.InMessage != nil {
+		relQuery := `
+		INSERT INTO relationship_states (session_id, state_json, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			state_json = excluded.state_json,
+			updated_at = excluded.updated_at;
+		`
+		if _, err := sqlTx.Exec(relQuery, tx.InMessage.SessionID, *tx.RelationshipStateJSON, now); err != nil {
+			return fmt.Errorf("transaction upsert relationship_state error: %w", err)
+		}
+	}
+
 	if err := sqlTx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit interaction transaction: %w", err)
 	}
 	sqlTx = nil
 
 	return nil
+}
+
+func (s *Storage) SaveRelationshipState(sessionID, stateJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	query := `
+	INSERT INTO relationship_states (session_id, state_json, updated_at)
+	VALUES (?, ?, ?)
+	ON CONFLICT(session_id) DO UPDATE SET
+		state_json = excluded.state_json,
+		updated_at = excluded.updated_at;
+	`
+	_, err := s.db.Exec(query, sessionID, stateJSON, now)
+	return err
+}
+
+func (s *Storage) GetRelationshipState(sessionID string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var stateJSON string
+	err := s.db.QueryRow(`SELECT state_json FROM relationship_states WHERE session_id = ?`, sessionID).Scan(&stateJSON)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return stateJSON, nil
 }
 
 func (s *Storage) Log(subsystem, level, message string) {
