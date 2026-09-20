@@ -170,7 +170,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	}
 
 	if candA == "" {
-		candA = "好呀，知道啊~"
+		candA = "在呢，怎么啦~"
 	}
 
 	// 5. Style Critic Pipeline (A/B/C -> best candidate)
@@ -335,6 +335,9 @@ func sanitizeOutput(text, personaName string) string {
 	aiMarkers := []string{
 		"opencode", "人工智能", "语言模型", "有什么可以帮您", "有什么我可以帮您",
 		"作为AI", "作为一名AI", "作为一个AI", "作为一个人工智能", "as an AI", "I'm an AI",
+		"想让我做什么", "需要我做什么", "有什么指令", "处理任务", "其他指令",
+		"很高兴为您服务", "请问有什么可以协助", "相关的任务", "为您解答", "请告诉我您的需求",
+		"我能为您做些什么", "请提供更多上下文", "作为您的", "有什么吩咐", "收到数字",
 	}
 	textLower := strings.ToLower(text)
 	hasMarker := false
@@ -359,11 +362,11 @@ func sanitizeOutput(text, personaName string) string {
 		return cleaned
 	}
 
-	// Fallback to authentic colloquial response if entire message was AI boilerplate
+	// Fallback to authentic colloquial companion response if message was AI boilerplate
 	if personaName != "" {
-		return "好呀，收到啦~"
+		return "在呢，怎么啦~"
 	}
-	return "收到啦~"
+	return "在呢~"
 }
 
 func (o *Orchestrator) callLLM(messages []map[string]string, temp float64, maxTokens int) (string, error) {
@@ -421,6 +424,9 @@ func cleanOutput(text string) string {
 	re := regexp.MustCompile(`(?s)<think>.*?</think>`)
 	cleaned := re.ReplaceAllString(text, "")
 	cleaned = strings.TrimPrefix(cleaned, "</think>")
+	if idx := strings.Index(cleaned, "<think>"); idx != -1 {
+		cleaned = cleaned[:idx]
+	}
 	return strings.TrimSpace(cleaned)
 }
 

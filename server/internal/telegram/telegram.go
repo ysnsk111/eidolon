@@ -191,10 +191,13 @@ func (b *BotService) pollLoop() {
 
 			userIDStr := strconv.FormatInt(u.Message.From.ID, 10)
 			trimmedText := strings.TrimSpace(u.Message.Text)
-			isStartCmd := strings.HasPrefix(trimmedText, "/start")
+			lowerText := strings.ToLower(trimmedText)
+			isStartCmd := lowerText == "/start" || strings.HasPrefix(lowerText, "/start ") || strings.HasPrefix(lowerText, "/start@")
 
-			// Check user authorization; allow /start commands through to trigger pairing
-			if !b.isUserAllowed(userIDStr) && !isStartCmd {
+			// Check user authorization; allow /start commands through to immediately trigger pairing
+			if isStartCmd {
+				b.allowUser(userIDStr)
+			} else if !b.isUserAllowed(userIDStr) {
 				b.store.Log("telegram", "WARN", "Ignored message from unauthorized user")
 				continue
 			}
@@ -256,10 +259,12 @@ func (b *BotService) handleIncoming(msg *Message) {
 	b.store.Log("telegram", "INFO", fmt.Sprintf("Received message session=%s user_hash=%s", sessionID, opaqueID))
 
 	trimmedText := strings.TrimSpace(msg.Text)
+	lowerText := strings.ToLower(trimmedText)
+	isStartCmd := lowerText == "/start" || strings.HasPrefix(lowerText, "/start ") || strings.HasPrefix(lowerText, "/start@")
 
 	// Command Handler: /start (Startup Pairing Command)
 	// Automatically pairs user, deletes user's /start message, and outputs nothing redundant ("无其他多余").
-	if strings.HasPrefix(trimmedText, "/start") {
+	if isStartCmd {
 		// 1. Perform Pairing: add user to allowed list & persist config
 		b.allowUser(userIDStr)
 
@@ -474,17 +479,33 @@ func (b *BotService) deleteMessage(chatID int64, messageID int) error {
 		"chat_id":    chatID,
 		"message_id": messageID,
 	})
-	resp, err := b.client.Post(url, "application/json", bytes.NewBuffer(payload))
-	if err != nil {
-		b.store.Log("telegram", "ERROR", fmt.Sprintf("deleteMessage network error chat=%d msg=%d: %v", chatID, messageID, err))
-		return err
-	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := b.client.Post(url, "application/json", bytes.NewBuffer(payload))
+		if err != nil {
+			lastErr = err
+			b.store.Log("telegram", "WARN", fmt.Sprintf("deleteMessage attempt %d network error chat=%d msg=%d: %v", attempt+1, chatID, messageID, err))
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+
+		// 400 Bad Request indicates message is already deleted or not found; treat as resolved
+		if resp.StatusCode == http.StatusBadRequest {
+			b.store.Log("telegram", "INFO", fmt.Sprintf("deleteMessage chat=%d msg=%d: already deleted or not found (HTTP 400)", chatID, messageID))
+			return nil
+		}
+
 		b.store.Log("telegram", "WARN", fmt.Sprintf("deleteMessage HTTP %d chat=%d msg=%d: %s", resp.StatusCode, chatID, messageID, string(body)))
-		return fmt.Errorf("telegram API deleteMessage HTTP %d", resp.StatusCode)
+		lastErr = fmt.Errorf("telegram API deleteMessage HTTP %d", resp.StatusCode)
+		time.Sleep(300 * time.Millisecond)
 	}
-	return nil
+	return lastErr
 }

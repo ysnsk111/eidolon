@@ -598,6 +598,7 @@ func (e *Engine) BuildPromptDirective(state *FullSessionState, plan ResponsePlan
 	default:
 		b.WriteString("• Guidance: Balanced, authentic everyday conversational rhythm.\n")
 	}
+	b.WriteString("• 真实人类对话原则：绝对不要像AI助手一样提问“你想让我做什么”或提及“任务/指令/服务”。像通讯软件里的真实好友一样随性闲聊。\n")
 
 	return b.String()
 }

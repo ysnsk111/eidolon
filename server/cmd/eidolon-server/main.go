@@ -52,7 +52,7 @@ func main() {
   ██╔══╝  ██║██║  ██║██║   ██║██║     ██║   ██║██║╚██╗██║
   ███████╗██║██████╔╝╚██████╔╝███████╗╚██████╔╝██║ ╚████║
   ╚══════╝╚═╝╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝
-  Persona Distillation & Memory Runtime v1.2.0
+  Persona Distillation & Memory Runtime v1.2.1
   «Preserve expression. Reconstruct context. Measure fidelity.»
 `)
 
