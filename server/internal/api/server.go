@@ -12,6 +12,7 @@ import (
 	"eidolon/server/internal/persona"
 	"eidolon/server/internal/runtime"
 	"eidolon/server/internal/storage"
+	"eidolon/server/internal/telegram"
 )
 
 type Server struct {
@@ -21,6 +22,7 @@ type Server struct {
 	personaMgr *persona.PersonaManager
 	memoryEng  *memory.Engine
 	orch       *runtime.Orchestrator
+	botService *telegram.BotService
 	httpServer *http.Server
 }
 
@@ -32,6 +34,7 @@ func NewServer(
 	personaMgr *persona.PersonaManager,
 	memoryEng *memory.Engine,
 	orch *runtime.Orchestrator,
+	botService *telegram.BotService,
 ) *Server {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	s := &Server{
@@ -41,6 +44,7 @@ func NewServer(
 		personaMgr: personaMgr,
 		memoryEng:  memoryEng,
 		orch:       orch,
+		botService: botService,
 	}
 
 	mux := http.NewServeMux()
@@ -53,6 +57,8 @@ func NewServer(
 	mux.HandleFunc("/api/evaluation", s.handleEvaluation)
 	mux.HandleFunc("/api/logs", s.handleLogs)
 	mux.HandleFunc("/api/chat", s.handleChat)
+	mux.HandleFunc("/api/bot/pairing-status", s.handlePairingStatus)
+	mux.HandleFunc("/api/distill/progress", s.handleDistillProgress)
 
 	// Static Web Dashboard Files
 	fileServer := http.FileServer(http.Dir(webDir))
@@ -202,6 +208,44 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, res)
+}
+
+func (s *Server) handlePairingStatus(w http.ResponseWriter, r *http.Request) {
+	if s.botService == nil {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"paired": false, "status": "bot_not_configured"})
+		return
+	}
+	status := s.botService.GetPairingStatus()
+	jsonResponse(w, http.StatusOK, status)
+}
+
+type DistillProgressRequest struct {
+	Event       string  `json:"event"`
+	Stage       int     `json:"stage"`
+	TotalStages int     `json:"total_stages"`
+	Message     string  `json:"message"`
+	PersonaID   string  `json:"persona_id"`
+	DSI         float64 `json:"dsi"`
+	ChatID      int64   `json:"chat_id"`
+}
+
+func (s *Server) handleDistillProgress(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req DistillProgressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if s.botService != nil {
+		s.botService.HandleDistillProgress(req.Event, req.Stage, req.TotalStages, req.Message, req.PersonaID, req.DSI, req.ChatID)
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

@@ -5,18 +5,21 @@ import { getConfigDir, loadConfig, saveConfig, DEFAULT_CONFIG } from '../utils/c
 import { logger } from '../utils/logger.js';
 import pc from 'picocolors';
 
-export async function initCommand(options) {
-  logger.divider();
-  logger.info('Initializing EIDOLON environment...');
+export async function initCommand(options = {}) {
+  const silent = options.silent === true;
+  if (!silent) {
+    logger.divider();
+    logger.info('Initializing EIDOLON environment...');
+  }
 
   // 1. Config directory
   const configDir = getConfigDir();
-  logger.success(`Configuration directory ready: ${configDir}`);
+  if (!silent) logger.success(`Configuration directory ready: ${configDir}`);
 
   // 2. Default config file
   const config = loadConfig();
   saveConfig(config);
-  logger.success(`Configuration file initialized: ${path.join(configDir, 'config.json')}`);
+  if (!silent) logger.success(`Configuration file initialized: ${path.join(configDir, 'config.json')}`);
 
   // 3. Results directory
   const resultDir = path.join(process.cwd(), 'completed_result');
@@ -98,11 +101,11 @@ export async function initCommand(options) {
   `);
 
   db.close();
-  logger.success(`SQLite persistence database initialized: ${dbPath}`);
-
-  logger.divider();
-  logger.success(pc.bold('EIDOLON initialization complete!'));
-  console.log(`
+  if (!silent) {
+    logger.success(`SQLite persistence database initialized: ${dbPath}`);
+    logger.divider();
+    logger.success(pc.bold('EIDOLON initialization complete!'));
+    console.log(`
 Next steps:
   1. Configure LLM API:
      ${pc.cyan('eidolon config test')}
@@ -112,4 +115,5 @@ Next steps:
   3. Start the runtime server:
      ${pc.cyan('eidolon service start')}
 `);
+  }
 }

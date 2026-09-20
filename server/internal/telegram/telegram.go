@@ -39,6 +39,14 @@ type BotService struct {
 	wg             sync.WaitGroup
 	queuesMu       sync.Mutex
 	sessionQueues  map[int64]chan *Message
+
+	distillMu             sync.Mutex
+	isDistilling          bool
+	distillChatID         int64
+	preparationMessageIDs []int
+	pairedUserID          string
+	pairedChatID          int64
+	isPaired              bool
 }
 
 type Update struct {
@@ -70,14 +78,27 @@ func NewBotService(cfg Config, orch *runtime.Orchestrator, store *storage.Storag
 		allowedMap[u] = true
 	}
 
+	var initialChatID int64
+	var initialUserID string
+	if len(cfg.AllowedUsers) > 0 {
+		initialUserID = cfg.AllowedUsers[0]
+		if cid, err := strconv.ParseInt(initialUserID, 10, 64); err == nil {
+			initialChatID = cid
+		}
+	}
+
 	return &BotService{
-		cfg:           cfg,
-		orch:          orch,
-		store:         store,
-		allowedUsers:  allowedMap,
-		client:        &http.Client{Timeout: 45 * time.Second},
-		stopCh:        make(chan struct{}),
-		sessionQueues: make(map[int64]chan *Message),
+		cfg:                   cfg,
+		orch:                  orch,
+		store:                 store,
+		allowedUsers:          allowedMap,
+		client:                &http.Client{Timeout: 45 * time.Second},
+		stopCh:                make(chan struct{}),
+		sessionQueues:         make(map[int64]chan *Message),
+		pairedUserID:          initialUserID,
+		pairedChatID:          initialChatID,
+		distillChatID:         initialChatID,
+		preparationMessageIDs: make([]int, 0),
 	}
 }
 
@@ -267,6 +288,12 @@ func (b *BotService) handleIncoming(msg *Message) {
 	if isStartCmd {
 		// 1. Perform Pairing: add user to allowed list & persist config
 		b.allowUser(userIDStr)
+		b.distillMu.Lock()
+		b.isPaired = true
+		b.pairedUserID = userIDStr
+		b.pairedChatID = msg.Chat.ID
+		b.distillChatID = msg.Chat.ID
+		b.distillMu.Unlock()
 
 		// 2. Automatically delete user's /start command message
 		if err := b.deleteMessage(msg.Chat.ID, msg.MessageID); err != nil {
@@ -276,6 +303,24 @@ func (b *BotService) handleIncoming(msg *Message) {
 		}
 
 		// 3. "无其他多余" - Do not send any greeting or other messages
+		return
+	}
+
+	// Distillation In-Progress Interceptor:
+	// Requirement: "蒸馏过程启动后在telegram机器人实时汇报蒸馏进度（此期间收到任何消息（命令或消息）自动发送提示please wait)"
+	b.distillMu.Lock()
+	distilling := b.isDistilling
+	b.distillMu.Unlock()
+
+	if distilling {
+		b.store.Log("telegram", "INFO", fmt.Sprintf("Received message during distillation session=%s: auto-replying please wait", sessionID))
+		replyID, err := b.sendMessage(msg.Chat.ID, "⏳ 正在进行蒸馏，请稍候... (Please wait)", msg.MessageID)
+		b.distillMu.Lock()
+		if err == nil && replyID > 0 {
+			b.preparationMessageIDs = append(b.preparationMessageIDs, replyID)
+		}
+		b.preparationMessageIDs = append(b.preparationMessageIDs, msg.MessageID)
+		b.distillMu.Unlock()
 		return
 	}
 
@@ -509,3 +554,134 @@ func (b *BotService) deleteMessage(chatID int64, messageID int) error {
 	}
 	return lastErr
 }
+
+func (b *BotService) GetPairingStatus() map[string]interface{} {
+	b.distillMu.Lock()
+	defer b.distillMu.Unlock()
+	return map[string]interface{}{
+		"paired":  b.isPaired,
+		"user_id": b.pairedUserID,
+		"chat_id": b.pairedChatID,
+	}
+}
+
+func (b *BotService) StartDistillation(chatID int64) {
+	b.distillMu.Lock()
+	b.isDistilling = true
+	if chatID != 0 {
+		b.distillChatID = chatID
+	} else if b.pairedChatID != 0 {
+		b.distillChatID = b.pairedChatID
+	} else if len(b.cfg.AllowedUsers) > 0 {
+		if id, err := strconv.ParseInt(b.cfg.AllowedUsers[0], 10, 64); err == nil {
+			b.distillChatID = id
+		}
+	}
+	targetChatID := b.distillChatID
+	b.distillMu.Unlock()
+
+	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation started for chat_id=%d", targetChatID))
+	if targetChatID != 0 {
+		msgID, err := b.sendMessage(targetChatID, "⏳ [EIDOLON] 开始人格蒸馏流程...", 0)
+		if err == nil && msgID > 0 {
+			b.distillMu.Lock()
+			b.preparationMessageIDs = append(b.preparationMessageIDs, msgID)
+			b.distillMu.Unlock()
+		}
+	}
+}
+
+func (b *BotService) ReportDistillationProgress(stage, totalStages int, message string) {
+	b.distillMu.Lock()
+	targetChatID := b.distillChatID
+	if targetChatID == 0 {
+		targetChatID = b.pairedChatID
+	}
+	b.distillMu.Unlock()
+
+	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation progress [%d/%d]: %s", stage, totalStages, message))
+	if targetChatID != 0 {
+		text := fmt.Sprintf("🔄 [进度 %d/%d] %s", stage, totalStages, message)
+		msgID, err := b.sendMessage(targetChatID, text, 0)
+		if err == nil && msgID > 0 {
+			b.distillMu.Lock()
+			b.preparationMessageIDs = append(b.preparationMessageIDs, msgID)
+			b.distillMu.Unlock()
+		}
+	}
+}
+
+func (b *BotService) FinishDistillation(personaID string, dsiScore float64) {
+	b.distillMu.Lock()
+	b.isDistilling = false
+	targetChatID := b.distillChatID
+	if targetChatID == 0 {
+		targetChatID = b.pairedChatID
+	}
+	prepIDs := make([]int, len(b.preparationMessageIDs))
+	copy(prepIDs, b.preparationMessageIDs)
+	b.preparationMessageIDs = nil
+	b.distillMu.Unlock()
+
+	// 1. ALL-CLEAR: Delete all preparation, progress, and please-wait messages!
+	// Requirement: "蒸馏完成后删除前面的一切前期准备消息（all-clear），然后正式进入蒸馏后人格模式。"
+	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation finished. Performing all-clear deletion of %d messages...", len(prepIDs)))
+	if targetChatID != 0 {
+		for _, msgID := range prepIDs {
+			_ = b.deleteMessage(targetChatID, msgID)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// 2. Load and activate distilled persona
+	if personaID != "" {
+		if loaded, err := b.orch.GetPersonaManager().LoadPersona(personaID); err == nil {
+			b.store.Log("telegram", "INFO", fmt.Sprintf("Activated distilled persona: %s (%s)", loaded.Persona.Name, personaID))
+			schedCfg := loaded.GetSchedulerConfig()
+			b.orch.GetScheduler().UpdateConfig(schedCfg)
+			b.persistActivePersona(personaID)
+		} else {
+			b.store.Log("telegram", "WARN", fmt.Sprintf("Failed to load persona %s from disk: %v", personaID, err))
+		}
+	}
+
+	// 3. Officially enter distilled persona mode!
+	// Send first natural greeting in character
+	greeting := "好啦，我在呢~"
+	if targetChatID != 0 {
+		_, _ = b.sendMessage(targetChatID, greeting, 0)
+	}
+}
+
+func (b *BotService) HandleDistillProgress(event string, stage, totalStages int, message, personaID string, dsi float64, chatID int64) {
+	switch strings.ToLower(event) {
+	case "start":
+		b.StartDistillation(chatID)
+	case "progress":
+		b.ReportDistillationProgress(stage, totalStages, message)
+	case "complete":
+		b.FinishDistillation(personaID, dsi)
+	}
+}
+
+func (b *BotService) persistActivePersona(personaID string) {
+	if b.cfg.ConfigPath == "" {
+		return
+	}
+	data, err := os.ReadFile(b.cfg.ConfigPath)
+	if err != nil {
+		return
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return
+	}
+
+	rawMap["activePersona"] = personaID
+	if updatedBytes, err := json.MarshalIndent(rawMap, "", "  "); err == nil {
+		_ = os.WriteFile(b.cfg.ConfigPath, updatedBytes, 0600)
+		b.store.Log("telegram", "INFO", fmt.Sprintf("Persisted active persona to config file at %s: %s", b.cfg.ConfigPath, personaID))
+	}
+}
+

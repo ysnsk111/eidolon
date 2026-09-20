@@ -22,6 +22,7 @@ export async function runDistillationPipeline({
   maxOptimizationRounds = 2,
   qualityGateThreshold = 0.80,
   judgeModel = null,
+  onProgress = null,
 }) {
   const timestampStr = new Date()
     .toISOString()
@@ -30,7 +31,14 @@ export async function runDistillationPipeline({
     .slice(0, 15);
   const personaId = `persona_${timestampStr}`;
 
+  if (onProgress) {
+    await onProgress({ event: 'start', stage: 0, totalStages: 8, message: '开始人格蒸馏流程...', personaId });
+  }
+
   logger.step(1, 8, `Ingesting and normalizing conversation data from: ${inputFile}`);
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 1, totalStages: 8, message: '数据导入与格式清洗 (Ingestion & Normalization)', personaId });
+  }
   const normalizedData = await ingestChatFile(inputFile, { targetSpeaker });
   const detectedTarget = normalizedData.targetSpeaker;
   const counterpart = normalizedData.counterpartSpeaker;
@@ -40,6 +48,9 @@ export async function runDistillationPipeline({
   logger.info(`Total messages: ${normalizedData.totalMessages} (${normalizedData.targetMessageCount} by target)`);
 
   logger.step(2, 8, 'Segmenting sessions & creating isolated blind evaluation datasets...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 2, totalStages: 8, message: '对话切片与评测集划分 (Chunking & Dataset Split)', personaId });
+  }
   const splitResult = chunkAndSplit(normalizedData);
   logger.info(`Turns created: ${splitResult.totalTurns} | Train: ${splitResult.distillationSet.length} | Val: ${splitResult.validationSet.length} | Blind Test: ${splitResult.blindTestSet.length}`);
 
@@ -48,9 +59,15 @@ export async function runDistillationPipeline({
   }
 
   logger.step(3, 8, 'Layer 1: Computing statistical Language Fingerprint...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 3, totalStages: 8, message: '统计语言指纹建模 (Layer 1 Language Fingerprint)', personaId });
+  }
   const languageModel = extractLanguageFingerprint(normalizedData.messages, detectedTarget);
 
   logger.step(4, 8, 'Layers 2, 3, 4: Distilling Conditional Style, Behavior Policies & Rhythm...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 4, totalStages: 8, message: '风格与行为策略树生成 (Layers 2, 3, 4 Style & Behavior)', personaId });
+  }
   let behaviorResult = await extractBehaviorAndRhythm(
     splitResult.distillationSet,
     normalizedData.messages,
@@ -75,12 +92,18 @@ export async function runDistillationPipeline({
   };
 
   logger.step(5, 8, 'Layer 5: Modeling Emoji & Sticker usage with context bindings...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 5, totalStages: 8, message: '表情包与上下文语义绑定建模 (Layer 5 Assets Model)', personaId });
+  }
   const targetTexts = normalizedData.messages
     .filter((m) => m.isTarget)
     .map((m) => m.content);
   const assetsModel = extractAssetModels(targetTexts, splitResult.distillationSet);
 
   logger.step(6, 8, 'Layer 6 & 7: Constructing World Model & Initial Memory Seed...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 6, totalStages: 8, message: '世界模型与记忆图谱种子构建 (Layer 6 & 7 World Model)', personaId });
+  }
   const worldModel = await buildWorldModel(
     contextFile,
     normalizedData.messages,
@@ -147,6 +170,9 @@ export async function runDistillationPipeline({
   };
 
   logger.step(7, 8, 'Constructing Persona Package with 1:1 Complete Agent System Prompts...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 7, totalStages: 8, message: '1:1 系统人设 Prompt 生成 (Persona Package Construction)', personaId });
+  }
   let personaPackage = constructPersonaPackage({
     personaId,
     targetSpeaker: detectedTarget,
@@ -160,6 +186,9 @@ export async function runDistillationPipeline({
   });
 
   logger.step(8, 8, 'Executing Offline Blind Evaluation against isolated test dataset...');
+  if (onProgress) {
+    await onProgress({ event: 'progress', stage: 8, totalStages: 8, message: '执行离线双盲独立评测与 DSI 指标计算 (Offline Blind Evaluation)', personaId });
+  }
   let evalReport = await runEvaluation({
     persona: personaPackage,
     testDataset: splitResult.blindTestSet,
@@ -176,6 +205,9 @@ export async function runDistillationPipeline({
   while (evalReport.dsi !== null && evalReport.dsi < qualityGateThreshold && optimizationRound < maxOptimizationRounds) {
     optimizationRound++;
     logger.warn(`DSI score (${(evalReport.dsi * 100).toFixed(1)}%) below gate (${(qualityGateThreshold * 100).toFixed(1)}%). Running Optimization Loop Round ${optimizationRound}...`);
+    if (onProgress) {
+      await onProgress({ event: 'progress', stage: 8, totalStages: 8, message: `DSI 优化微调轮次 ${optimizationRound}...`, personaId });
+    }
 
     const optResult = analyzeFailuresAndOptimize({
       evaluationReport: evalReport,
@@ -245,9 +277,21 @@ export async function runDistillationPipeline({
     evaluationHtml: evalHtml,
   });
 
+  const dsiStr = typeof evalReport.dsi === 'number' && !Number.isNaN(evalReport.dsi) ? `${(evalReport.dsi * 100).toFixed(1)}%` : 'N/A';
+
+  if (onProgress) {
+    await onProgress({
+      event: 'complete',
+      stage: 8,
+      totalStages: 8,
+      message: `人格蒸馏已完成！DSI 得分: ${dsiStr} [${evalReport.status}]`,
+      personaId,
+      dsi: evalReport.dsi,
+    });
+  }
+
   logger.success(`Distillation completed!`);
   logger.info(`Persona Directory: ${exportResult.packageDir}`);
-  const dsiStr = typeof evalReport.dsi === 'number' && !Number.isNaN(evalReport.dsi) ? `${(evalReport.dsi * 100).toFixed(1)}%` : 'N/A';
   logger.info(`Final DSI Score: ${dsiStr} [${evalReport.status}]`);
 
   return {

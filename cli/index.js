@@ -16,6 +16,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runOnboardingWizard } from './commands/onboarding.js';
+import { loadConfig } from './utils/config.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
 
@@ -26,17 +29,53 @@ program
   .description('EIDOLON — Persona Distillation & Memory Runtime')
   .version(pkg.version);
 
-// Default command: print status
+// Default command: if first run (not onboarded), execute onboarding wizard; else print status
 program
   .action(async () => {
-    await statusCommand();
+    const config = loadConfig();
+    if (!config.onboarded) {
+      await runOnboardingWizard();
+    } else {
+      await statusCommand();
+    }
+  });
+
+// 0. start (runs onboarding on first launch, or starts service)
+program
+  .command('start')
+  .description('Start EIDOLON service (automatically launches user onboarding guide on first run)')
+  .option('-g, --guided', 'Force run interactive onboarding guide')
+  .action(async (options) => {
+    const config = loadConfig();
+    if (!config.onboarded || options.guided) {
+      await runOnboardingWizard();
+    } else {
+      await serviceCommand('start');
+    }
   });
 
 // 1. init
 program
   .command('init')
-  .description('Initialize EIDOLON environment and local databases')
-  .action(initCommand);
+  .description('Initialize EIDOLON environment and local databases (launches onboarding guide if uninitialized)')
+  .option('-g, --guided', 'Run interactive onboarding guide')
+  .action(async (options) => {
+    const config = loadConfig();
+    if (!config.onboarded || options.guided) {
+      await runOnboardingWizard();
+    } else {
+      await initCommand(options);
+    }
+  });
+
+// 1b. guide
+program
+  .command('guide')
+  .alias('onboarding')
+  .description('Run interactive user onboarding and pairing guide')
+  .action(async () => {
+    await runOnboardingWizard();
+  });
 
 // 2. config
 program

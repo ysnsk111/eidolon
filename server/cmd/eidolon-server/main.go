@@ -52,7 +52,7 @@ func main() {
   ██╔══╝  ██║██║  ██║██║   ██║██║     ██║   ██║██║╚██╗██║
   ███████╗██║██████╔╝╚██████╔╝███████╗╚██████╔╝██║ ╚████║
   ╚══════╝╚═╝╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝
-  Persona Distillation & Memory Runtime v1.2.1
+  Persona Distillation & Memory Runtime v1.2.5
   «Preserve expression. Reconstruct context. Measure fidelity.»
 `)
 
@@ -154,6 +154,7 @@ func main() {
 		personaMgr,
 		memoryEng,
 		orch,
+		botService,
 	)
 
 	go func() {

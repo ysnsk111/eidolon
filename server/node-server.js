@@ -51,6 +51,58 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (parsedUrl.pathname === '/api/bot/pairing-status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    const currentCfg = loadConfig();
+    const hasAllowed = Array.isArray(currentCfg.bot?.allowedUsers) && currentCfg.bot.allowedUsers.length > 0;
+    res.end(JSON.stringify({
+      paired: hasAllowed,
+      user_id: hasAllowed ? currentCfg.bot.allowedUsers[0] : null,
+      chat_id: hasAllowed ? currentCfg.bot.allowedUsers[0] : null,
+    }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/distill/progress' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const parsed = JSON.parse(body);
+        const currentCfg = loadConfig();
+        const token = currentCfg.bot?.telegramToken;
+        const targetChat = currentCfg.bot?.allowedUsers?.[0];
+        if (token && targetChat) {
+          if (parsed.event === 'start') {
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: targetChat, text: '⏳ [EIDOLON] 开始人格蒸馏流程...' }),
+            }).catch(() => {});
+          } else if (parsed.event === 'progress') {
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: targetChat, text: `🔄 [进度 ${parsed.stage}/${parsed.total_stages}] ${parsed.message}` }),
+            }).catch(() => {});
+          } else if (parsed.event === 'complete') {
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: targetChat, text: '好啦，我在呢~' }),
+            }).catch(() => {});
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/api/persona') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     if (!config.activePersona) {

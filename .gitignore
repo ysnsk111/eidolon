@@ -32,8 +32,10 @@ node_modules/
 dist/
 bin/
 build/
+release-builds/
 coverage/
 *.tar.gz
+*.tgz
 
 # Editors & OS
 .vscode/

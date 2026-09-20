@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -386,6 +387,202 @@ func TestTelegram_StartPairingFollowedByMessage123(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Expected user 8287471787 to be persisted in config, got %v", parsedConfig.Bot.AllowedUsers)
+	}
+}
+
+func TestTelegram_DistillationProgressAndAllClear(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test.db")
+	store, err := storage.NewStorage(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to init storage: %v", err)
+	}
+
+	configPath := filepath.Join(tempDir, "config.json")
+	initialConfig := []byte(`{"bot":{"allowedUsers":["8287471787"]}}`)
+	if err := os.WriteFile(configPath, initialConfig, 0600); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	var mu sync.Mutex
+	var deletedMessageIDs []int
+	var sentMessages []map[string]interface{}
+	nextMsgID := 100
+	pollCount := 0
+	var deliverDistillMessage bool
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch r.URL.Path {
+		case "/botMOCK_TOKEN/getUpdates":
+			pollCount++
+			if pollCount == 1 {
+				// Poll 1: user sends /start (message 50)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"ok": true,
+					"result": []map[string]interface{}{
+						{
+							"update_id": 2001,
+							"message": map[string]interface{}{
+								"message_id": 50,
+								"from": map[string]interface{}{
+									"id":         8287471787,
+									"first_name": "TestUser",
+								},
+								"chat": map[string]interface{}{
+									"id": 8287471787,
+								},
+								"date": int(time.Now().Unix()),
+								"text": "/start",
+							},
+						},
+					},
+				})
+			} else if deliverDistillMessage {
+				// Message arrives precisely while distillation is in progress!
+				deliverDistillMessage = false
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"ok": true,
+					"result": []map[string]interface{}{
+						{
+							"update_id": 2002,
+							"message": map[string]interface{}{
+								"message_id": 51,
+								"from": map[string]interface{}{
+									"id":         8287471787,
+									"first_name": "TestUser",
+								},
+								"chat": map[string]interface{}{
+									"id": 8287471787,
+								},
+								"date": int(time.Now().Unix()),
+								"text": "测试蒸馏中发消息",
+							},
+						},
+					},
+				})
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"ok":     true,
+					"result": []map[string]interface{}{},
+				})
+			}
+
+		case "/botMOCK_TOKEN/deleteMessage":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			_ = json.Unmarshal(body, &req)
+			if mid, ok := req["message_id"].(float64); ok {
+				deletedMessageIDs = append(deletedMessageIDs, int(mid))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok":     true,
+				"result": true,
+			})
+
+		case "/botMOCK_TOKEN/sendMessage":
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]interface{}
+			_ = json.Unmarshal(body, &req)
+			nextMsgID++
+			req["sent_id"] = nextMsgID
+			sentMessages = append(sentMessages, req)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok": true,
+				"result": map[string]interface{}{
+					"message_id": nextMsgID,
+				},
+			})
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer mockServer.Close()
+
+	personaMgr := persona.NewPersonaManager(tempDir)
+	memEng := memory.NewEngine(store)
+	sched := scheduler.NewScheduler(scheduler.Config{BaseDelayMs: 500})
+	orch := runtime.NewOrchestrator(store, personaMgr, memEng, sched, runtime.LLMConfig{})
+
+	cfg := telegram.Config{
+		Token:        "MOCK_TOKEN",
+		AllowedUsers: []string{"8287471787"},
+		PollTimeout:  1,
+		ConfigPath:   configPath,
+	}
+
+	bot := telegram.NewBotService(cfg, orch, store)
+	testClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			targetURL := mockServer.URL + req.URL.Path
+			newReq, _ := http.NewRequest(req.Method, targetURL, req.Body)
+			newReq.Header = req.Header
+			return http.DefaultClient.Do(newReq)
+		}),
+	}
+	bot.SetHTTPClient(testClient)
+
+	_ = bot.Start()
+	// Wait for /start to be processed
+	time.Sleep(250 * time.Millisecond)
+
+	// Check Pairing Status
+	pairingStatus := bot.GetPairingStatus()
+	if !pairingStatus["paired"].(bool) {
+		t.Fatalf("Expected bot to be paired after /start, got %v", pairingStatus)
+	}
+
+	// 1. Trigger Distillation Start
+	bot.StartDistillation(8287471787)
+
+	// Tell mockServer to deliver message 51 during distillation
+	mu.Lock()
+	deliverDistillMessage = true
+	mu.Unlock()
+
+	// 2. Report Progress
+	bot.ReportDistillationProgress(1, 8, "Ingestion & Normalization")
+	bot.ReportDistillationProgress(2, 8, "Chunking & Segmentation")
+
+	// Wait for message 51 to be polled and processed during distillation
+	time.Sleep(350 * time.Millisecond)
+
+	mu.Lock()
+	foundPleaseWait := false
+	for _, m := range sentMessages {
+		if text, ok := m["text"].(string); ok && (strings.Contains(text, "Please wait") || strings.Contains(text, "请稍候")) {
+			foundPleaseWait = true
+			break
+		}
+	}
+	mu.Unlock()
+
+	if !foundPleaseWait {
+		t.Errorf("Expected bot to reply 'please wait' when message received during distillation")
+	}
+
+	// 3. Complete Distillation (All-Clear)
+	bot.FinishDistillation("ms_yawen", 0.85)
+
+	time.Sleep(200 * time.Millisecond)
+	bot.Stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// 4. Verify ALL-CLEAR: progress messages and please-wait messages were all deleted!
+	if len(deletedMessageIDs) < 3 {
+		t.Errorf("Expected at least 3 deleted messages (start, progress, please wait, incoming), got %d: %v", len(deletedMessageIDs), deletedMessageIDs)
+	}
+
+	// 5. Verify distilled persona opening greeting was sent!
+	lastSent := sentMessages[len(sentMessages)-1]
+	if text, ok := lastSent["text"].(string); !ok || !strings.Contains(text, "我在呢") {
+		t.Errorf("Expected final message to be persona greeting, got: %v", lastSent)
 	}
 }
 

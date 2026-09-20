@@ -10,7 +10,8 @@ const CONFIG_DIR = path.join(os.homedir(), '.config', 'eidolon');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 export const DEFAULT_CONFIG = {
-  version: '1.1.0',
+  version: '1.2.5',
+  onboarded: false,
   llm: {
     baseUrl: process.env.EIDOLON_LLM_BASE_URL || 'http://localhost:8083/v1',
     apiKey: process.env.EIDOLON_LLM_API_KEY || '',
