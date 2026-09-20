@@ -62,6 +62,7 @@ export async function distillCommand(file, options) {
           message,
           persona_id: personaId,
           dsi,
+          chat_id: primaryChatId ? parseInt(primaryChatId, 10) : 0,
         }),
       });
       if (resp.ok) {

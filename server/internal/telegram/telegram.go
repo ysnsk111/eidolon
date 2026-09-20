@@ -283,29 +283,6 @@ func (b *BotService) handleIncoming(msg *Message) {
 	lowerText := strings.ToLower(trimmedText)
 	isStartCmd := lowerText == "/start" || strings.HasPrefix(lowerText, "/start ") || strings.HasPrefix(lowerText, "/start@")
 
-	// Command Handler: /start (Startup Pairing Command)
-	// Automatically pairs user, deletes user's /start message, and outputs nothing redundant ("无其他多余").
-	if isStartCmd {
-		// 1. Perform Pairing: add user to allowed list & persist config
-		b.allowUser(userIDStr)
-		b.distillMu.Lock()
-		b.isPaired = true
-		b.pairedUserID = userIDStr
-		b.pairedChatID = msg.Chat.ID
-		b.distillChatID = msg.Chat.ID
-		b.distillMu.Unlock()
-
-		// 2. Automatically delete user's /start command message
-		if err := b.deleteMessage(msg.Chat.ID, msg.MessageID); err != nil {
-			b.store.Log("telegram", "WARN", fmt.Sprintf("Failed to delete /start command message: %v", err))
-		} else {
-			b.store.Log("telegram", "INFO", fmt.Sprintf("Successfully deleted /start command message id=%d chat=%d", msg.MessageID, msg.Chat.ID))
-		}
-
-		// 3. "无其他多余" - Do not send any greeting or other messages
-		return
-	}
-
 	// Distillation In-Progress Interceptor:
 	// Requirement: "蒸馏过程启动后在telegram机器人实时汇报蒸馏进度（此期间收到任何消息（命令或消息）自动发送提示please wait)"
 	b.distillMu.Lock()
@@ -324,6 +301,30 @@ func (b *BotService) handleIncoming(msg *Message) {
 		return
 	}
 
+	// Command Handler: /start (Startup Pairing Command)
+	// Automatically pairs user, deletes user's /start message, and outputs nothing redundant ("无其他多余").
+	if isStartCmd {
+		// 1. Perform Pairing: add user to allowed list & persist config
+		b.allowUser(userIDStr)
+		b.distillMu.Lock()
+		b.isPaired = true
+		b.pairedUserID = userIDStr
+		b.pairedChatID = msg.Chat.ID
+		b.distillChatID = msg.Chat.ID
+		b.preparationMessageIDs = append(b.preparationMessageIDs, msg.MessageID)
+		b.distillMu.Unlock()
+
+		// 2. Automatically delete user's /start command message
+		if err := b.deleteMessage(msg.Chat.ID, msg.MessageID); err != nil {
+			b.store.Log("telegram", "WARN", fmt.Sprintf("Failed to delete /start command message: %v", err))
+		} else {
+			b.store.Log("telegram", "INFO", fmt.Sprintf("Successfully deleted /start command message id=%d chat=%d", msg.MessageID, msg.Chat.ID))
+		}
+
+		// 3. "无其他多余" - Do not send any greeting or other messages
+		return
+	}
+
 	// Command Handler: /status
 	if strings.HasPrefix(trimmedText, "/status") {
 		activeP := b.orch.GetPersonaManager().GetActivePersona()
@@ -335,7 +336,13 @@ func (b *BotService) handleIncoming(msg *Message) {
 			statusText = fmt.Sprintf("📊 EIDOLON 运行时状态:\n• 激活人格: 无 (待配置)\n• 仿真输入模拟: %v\n• 会话 ID: %s",
 				b.cfg.SimulateTyping, sessionID)
 		}
-		_, _ = b.sendMessage(msg.Chat.ID, statusText, msg.MessageID)
+		statID, _ := b.sendMessage(msg.Chat.ID, statusText, msg.MessageID)
+		b.distillMu.Lock()
+		if statID > 0 {
+			b.preparationMessageIDs = append(b.preparationMessageIDs, statID)
+		}
+		b.preparationMessageIDs = append(b.preparationMessageIDs, msg.MessageID)
+		b.distillMu.Unlock()
 		return
 	}
 
@@ -565,19 +572,46 @@ func (b *BotService) GetPairingStatus() map[string]interface{} {
 	}
 }
 
+func (b *BotService) resolveTargetChatID(chatID int64) int64 {
+	if chatID != 0 {
+		b.distillChatID = chatID
+		return chatID
+	}
+	if b.distillChatID != 0 {
+		return b.distillChatID
+	}
+	if b.pairedChatID != 0 {
+		b.distillChatID = b.pairedChatID
+		return b.pairedChatID
+	}
+	if len(b.cfg.AllowedUsers) > 0 {
+		if id, err := strconv.ParseInt(b.cfg.AllowedUsers[0], 10, 64); err == nil {
+			b.distillChatID = id
+			return id
+		}
+	}
+	if b.cfg.ConfigPath != "" {
+		if data, err := os.ReadFile(b.cfg.ConfigPath); err == nil {
+			var rawMap map[string]interface{}
+			if err := json.Unmarshal(data, &rawMap); err == nil {
+				if botMap, ok := rawMap["bot"].(map[string]interface{}); ok {
+					if users, ok := botMap["allowedUsers"].([]interface{}); ok && len(users) > 0 {
+						if cid, err := strconv.ParseInt(fmt.Sprintf("%v", users[0]), 10, 64); err == nil {
+							b.distillChatID = cid
+							return cid
+						}
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func (b *BotService) StartDistillation(chatID int64) {
 	b.distillMu.Lock()
 	b.isDistilling = true
-	if chatID != 0 {
-		b.distillChatID = chatID
-	} else if b.pairedChatID != 0 {
-		b.distillChatID = b.pairedChatID
-	} else if len(b.cfg.AllowedUsers) > 0 {
-		if id, err := strconv.ParseInt(b.cfg.AllowedUsers[0], 10, 64); err == nil {
-			b.distillChatID = id
-		}
-	}
-	targetChatID := b.distillChatID
+	targetChatID := b.resolveTargetChatID(chatID)
 	b.distillMu.Unlock()
 
 	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation started for chat_id=%d", targetChatID))
@@ -591,15 +625,16 @@ func (b *BotService) StartDistillation(chatID int64) {
 	}
 }
 
-func (b *BotService) ReportDistillationProgress(stage, totalStages int, message string) {
+func (b *BotService) ReportDistillationProgress(stage, totalStages int, message string, chatID ...int64) {
 	b.distillMu.Lock()
-	targetChatID := b.distillChatID
-	if targetChatID == 0 {
-		targetChatID = b.pairedChatID
+	var passedID int64
+	if len(chatID) > 0 {
+		passedID = chatID[0]
 	}
+	targetChatID := b.resolveTargetChatID(passedID)
 	b.distillMu.Unlock()
 
-	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation progress [%d/%d]: %s", stage, totalStages, message))
+	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation progress [%d/%d]: %s (chat_id=%d)", stage, totalStages, message, targetChatID))
 	if targetChatID != 0 {
 		text := fmt.Sprintf("🔄 [进度 %d/%d] %s", stage, totalStages, message)
 		msgID, err := b.sendMessage(targetChatID, text, 0)
@@ -611,13 +646,15 @@ func (b *BotService) ReportDistillationProgress(stage, totalStages int, message 
 	}
 }
 
-func (b *BotService) FinishDistillation(personaID string, dsiScore float64) {
+func (b *BotService) FinishDistillation(personaID string, dsiScore float64, chatID ...int64) {
 	b.distillMu.Lock()
 	b.isDistilling = false
-	targetChatID := b.distillChatID
-	if targetChatID == 0 {
-		targetChatID = b.pairedChatID
+	var passedID int64
+	if len(chatID) > 0 {
+		passedID = chatID[0]
 	}
+	targetChatID := b.resolveTargetChatID(passedID)
+
 	prepIDs := make([]int, len(b.preparationMessageIDs))
 	copy(prepIDs, b.preparationMessageIDs)
 	b.preparationMessageIDs = nil
@@ -625,9 +662,19 @@ func (b *BotService) FinishDistillation(personaID string, dsiScore float64) {
 
 	// 1. ALL-CLEAR: Delete all preparation, progress, and please-wait messages!
 	// Requirement: "蒸馏完成后删除前面的一切前期准备消息（all-clear），然后正式进入蒸馏后人格模式。"
-	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation finished. Performing all-clear deletion of %d messages...", len(prepIDs)))
+	// Deduplicate message IDs to avoid redundant Telegram API delete requests
+	seenIDs := make(map[int]bool)
+	var uniquePrepIDs []int
+	for _, msgID := range prepIDs {
+		if msgID > 0 && !seenIDs[msgID] {
+			seenIDs[msgID] = true
+			uniquePrepIDs = append(uniquePrepIDs, msgID)
+		}
+	}
+
+	b.store.Log("telegram", "INFO", fmt.Sprintf("Distillation finished. Performing all-clear deletion of %d messages...", len(uniquePrepIDs)))
 	if targetChatID != 0 {
-		for _, msgID := range prepIDs {
+		for _, msgID := range uniquePrepIDs {
 			_ = b.deleteMessage(targetChatID, msgID)
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -658,9 +705,9 @@ func (b *BotService) HandleDistillProgress(event string, stage, totalStages int,
 	case "start":
 		b.StartDistillation(chatID)
 	case "progress":
-		b.ReportDistillationProgress(stage, totalStages, message)
+		b.ReportDistillationProgress(stage, totalStages, message, chatID)
 	case "complete":
-		b.FinishDistillation(personaID, dsi)
+		b.FinishDistillation(personaID, dsi, chatID)
 	}
 }
 

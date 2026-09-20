@@ -163,6 +163,42 @@ describe('CLI Onboarding Wizard & Distillation Telegram Integration', () => {
     }
   });
 
+  test('runOnboardingWizard saves supplementText into world_context.md when provided', async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      if (typeof url === 'string' && url.includes('api.telegram.org')) {
+        const pathSuffix = url.replace(/^https?:\/\/api\.telegram\.org/, '');
+        return origFetch(`http://127.0.0.1:${mockPort}${pathSuffix}`, opts);
+      }
+      return origFetch(url, opts);
+    };
+
+    try {
+      const sampleFile = path.resolve(process.cwd(), 'tests/fixtures/chat_sample.txt');
+      const customWorldText = '世界观设定：这是一个虚构的世界线，主角在雨夜遇见了对方。';
+
+      await runOnboardingWizard({
+        nonInteractive: true,
+        llmBaseUrl: `http://127.0.0.1:${mockPort}/v1`,
+        llmApiKey: 'test-api-key',
+        llmModel: 'opencode/nemotron-3.5-lightning-free',
+        input: sampleFile,
+        supplementText: customWorldText,
+        botToken: '8921441705:mock_token',
+        userId: '8287471787',
+        startDistill: false,
+      });
+
+      const { getConfigDir } = await import('../../cli/utils/config.js');
+      const savedContextPath = path.join(getConfigDir(), 'world_context.md');
+      assert.ok(fs.existsSync(savedContextPath), 'world_context.md should exist');
+      const content = fs.readFileSync(savedContextPath, 'utf-8');
+      assert.ok(content.includes('世界观设定'), 'world_context.md should contain supplementary text');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   test('runDistillationPipeline emits onProgress events across all pipeline stages including start and complete', async () => {
     const progressEvents = [];
     const sampleFile = path.resolve(process.cwd(), 'tests/fixtures/chat_sample.txt');

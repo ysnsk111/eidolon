@@ -29,6 +29,17 @@ export async function runOnboardingWizard(options = {}) {
   // Ensure local DB & directories are initialized
   await initCommand({ silent: true });
 
+  // Ensure robot is NOT running initially ("先不启动机器人")
+  const configDir = getConfigDir();
+  const pidFile = path.join(configDir, 'eidolon.pid');
+  if (fs.existsSync(pidFile)) {
+    try {
+      const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      process.kill(pid, 'SIGTERM');
+      fs.unlinkSync(pidFile);
+    } catch (_) {}
+  }
+
   const config = loadConfig();
   const isNonInteractive = options.nonInteractive || process.env.EIDOLON_NON_INTERACTIVE === '1';
 
@@ -46,7 +57,7 @@ export async function runOnboardingWizard(options = {}) {
 
     let apiReady = false;
     let baseUrl = options.llmBaseUrl || config.llm?.baseUrl || 'http://localhost:8083/v1';
-    let apiKey = options.llmApiKey || config.llm?.apiKey || '';
+    let apiKey = options.llmApiKey || config.llm?.apiKey || 'sk-oc2oai-017d49ffb8309de5673932058071ce95';
     let model = options.llmModel || config.llm?.model || 'opencode/nemotron-3.5-lightning-free';
 
     while (!apiReady) {
@@ -117,6 +128,7 @@ export async function runOnboardingWizard(options = {}) {
         if (isNonInteractive) {
           throw new Error(`File not found: ${absPath}`);
         }
+        distillFilePath = '';
       }
     }
 
@@ -128,7 +140,7 @@ export async function runOnboardingWizard(options = {}) {
     console.log(pc.gray('（补充的内容一般是聊天记录里不会出现的、大环境、世界观世界线、未言明的经历与关系背景等）'));
 
     let contextFilePath = options.context || null;
-    let supplementText = '';
+    let supplementText = options.supplementText || options.contextText || '';
 
     if (!isNonInteractive && !contextFilePath) {
       console.log(pc.cyan('  提示：可直接输入一段文本补充说明，或输入已有设定文件路径（例如 world.md），无补充直接按回车跳过。'));
@@ -207,7 +219,22 @@ export async function runOnboardingWizard(options = {}) {
     console.log(pc.cyan('  正在启动 EIDOLON 运行时服务与 Telegram 机器人...'));
 
     try {
-      await serviceCommand('start');
+      const pidFile = path.join(getConfigDir(), 'eidolon.pid');
+      const isRunning = fs.existsSync(pidFile) && (() => {
+        try {
+          const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+          process.kill(pid, 0);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      })();
+
+      if (isRunning) {
+        await serviceCommand('restart');
+      } else {
+        await serviceCommand('start');
+      }
     } catch (err) {
       console.log(pc.yellow(`  启动服务提示: ${err.message}`));
     }
@@ -223,8 +250,9 @@ export async function runOnboardingWizard(options = {}) {
       const spinner = ora('  等待 Telegram 鉴权配对中 (请在 Telegram 发送 /start)...').start();
       let paired = false;
       const pollStart = Date.now();
-      const serverPort = config.server?.port || 8090;
-      const serverHost = config.server?.host || '127.0.0.1';
+      const currentCfg = loadConfig();
+      const serverPort = currentCfg.server?.port || 8090;
+      const serverHost = currentCfg.server?.host || '127.0.0.1';
 
       while (!paired && Date.now() - pollStart < 45000) {
         await new Promise((r) => setTimeout(r, 1500));

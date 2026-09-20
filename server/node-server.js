@@ -14,6 +14,8 @@ const host = config.server.host || '127.0.0.1';
 const webDir = path.join(__dirname, 'web');
 const llm = new OpenAICompatibleProvider(config.llm);
 
+let preparationMessageIDs = [];
+
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -71,21 +73,43 @@ const server = http.createServer(async (req, res) => {
         const parsed = JSON.parse(body);
         const currentCfg = loadConfig();
         const token = currentCfg.bot?.telegramToken;
-        const targetChat = currentCfg.bot?.allowedUsers?.[0];
+        const targetChat = parsed.chat_id || currentCfg.bot?.allowedUsers?.[0];
         if (token && targetChat) {
           if (parsed.event === 'start') {
-            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chat_id: targetChat, text: '⏳ [EIDOLON] 开始人格蒸馏流程...' }),
-            }).catch(() => {});
+            }).catch(() => null);
+            if (resp && resp.ok) {
+              const resData = await resp.json().catch(() => ({}));
+              if (resData.result?.message_id) {
+                preparationMessageIDs.push(resData.result.message_id);
+              }
+            }
           } else if (parsed.event === 'progress') {
-            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chat_id: targetChat, text: `🔄 [进度 ${parsed.stage}/${parsed.total_stages}] ${parsed.message}` }),
-            }).catch(() => {});
+            }).catch(() => null);
+            if (resp && resp.ok) {
+              const resData = await resp.json().catch(() => ({}));
+              if (resData.result?.message_id) {
+                preparationMessageIDs.push(resData.result.message_id);
+              }
+            }
           } else if (parsed.event === 'complete') {
+            // ALL-CLEAR: Delete all preparation and progress messages
+            const toDelete = [...new Set(preparationMessageIDs)];
+            preparationMessageIDs = [];
+            for (const mid of toDelete) {
+              await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: targetChat, message_id: mid }),
+              }).catch(() => {});
+            }
             await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

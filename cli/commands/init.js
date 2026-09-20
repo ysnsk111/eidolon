@@ -26,7 +26,7 @@ export async function initCommand(options = {}) {
   if (!fs.existsSync(resultDir)) {
     fs.mkdirSync(resultDir, { recursive: true });
   }
-  logger.success(`Output repository directory ready: ${resultDir}`);
+  if (!silent) logger.success(`Output repository directory ready: ${resultDir}`);
 
   // 4. Initialize SQLite Database schemas
   const dbPath = config.server.dbPath || path.join(configDir, 'eidolon.db');

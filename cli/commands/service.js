@@ -13,6 +13,13 @@ export async function serviceCommand(action) {
 
   switch (action) {
     case 'start': {
+      if (!config.onboarded) {
+        logger.warn('项目首次部署尚未完成配置引导，正在启动用户引导程序 (先不启动机器人)...');
+        const { runOnboardingWizard } = await import('./onboarding.js');
+        await runOnboardingWizard();
+        return;
+      }
+
       if (isDaemonRunning(pidFile)) {
         logger.warn(`EIDOLON service is already running (PID: ${fs.readFileSync(pidFile, 'utf-8').trim()}).`);
         return;
