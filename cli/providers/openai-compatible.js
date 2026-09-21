@@ -28,14 +28,14 @@ export class OpenAICompatibleProvider extends BaseProvider {
     return headers;
   }
 
-  async testConnection() {
+  async testConnection(options = {}) {
     try {
       const res = await this.callApi('/chat/completions', {
         model: this.model,
         messages: [{ role: 'user', content: 'Respond with the single word: PONG' }],
         max_tokens: 256,
         temperature: 0.1,
-      }, { timeoutMs: 60000 });
+      }, { timeoutMs: options.timeoutMs || this.timeoutMs || 15000 });
       const content = this.cleanOutput(res.choices?.[0]?.message?.content || '');
       return {
         ok: true,
@@ -60,15 +60,33 @@ export class OpenAICompatibleProvider extends BaseProvider {
       temperature: options.temperature ?? this.temperature,
       max_tokens: options.maxTokens || this.maxTokens,
     };
-    const res = await this.callApi('/chat/completions', body, options);
-    const rawContent = res.choices?.[0]?.message?.content || '';
-    const cleaned = this.cleanOutput(rawContent);
-    return {
-      content: cleaned,
-      rawContent,
-      usage: res.usage || {},
-      finishReason: res.choices?.[0]?.finish_reason || 'stop',
-    };
+    try {
+      const res = await this.callApi('/chat/completions', body, options);
+      const rawContent = res.choices?.[0]?.message?.content || '';
+      const cleaned = this.cleanOutput(rawContent);
+      return {
+        content: cleaned,
+        rawContent,
+        usage: res.usage || {},
+        finishReason: res.choices?.[0]?.finish_reason || 'stop',
+      };
+    } catch (err) {
+      if (err.isContextOverflow && !options._retriedForOverflow) {
+        // Apply sliding-window compression/reduction on context overflow
+        if (Array.isArray(messages) && messages.length > 2) {
+          const sys = messages.filter((m) => m.role === 'system');
+          const nonSys = messages.filter((m) => m.role !== 'system');
+          const half = Math.max(1, Math.floor(nonSys.length / 2));
+          const reduced = [...sys, ...nonSys.slice(half)];
+          return this.generate(reduced, { ...options, _retriedForOverflow: true });
+        } else if (messages.length === 2 && typeof messages[1].content === 'string' && messages[1].content.length > 1500) {
+          const trimmed = messages[1].content.slice(0, Math.floor(messages[1].content.length * 0.6));
+          const reduced = [messages[0], { ...messages[1], content: trimmed }];
+          return this.generate(reduced, { ...options, _retriedForOverflow: true });
+        }
+      }
+      throw err;
+    }
   }
 
   async distill(systemPrompt, userPrompt, options = {}) {
@@ -237,7 +255,22 @@ Generated Candidate:
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
-        throw new Error(`API returned HTTP ${response.status}: ${errorText}`);
+        const err = new Error(`API returned HTTP ${response.status}: ${errorText}`);
+        err.status = response.status;
+        err.errorBody = errorText;
+        const lower = errorText.toLowerCase();
+        if (
+          response.status === 400 &&
+          (lower.includes('context') ||
+            lower.includes('token') ||
+            lower.includes('maximum') ||
+            lower.includes('exceeded') ||
+            lower.includes('length') ||
+            lower.includes('too large'))
+        ) {
+          err.isContextOverflow = true;
+        }
+        throw err;
       }
 
       return await response.json();
@@ -258,6 +291,10 @@ Generated Candidate:
     // If output starts with reasoning without opening tag
     if (cleaned.startsWith('</think>')) {
       cleaned = cleaned.replace(/^<\/think>\s*/i, '');
+    }
+    // If <think> was never closed (e.g. truncated reasoning)
+    if (cleaned.includes('<think>')) {
+      cleaned = cleaned.replace(/<think>[\s\S]*/gi, '').trim();
     }
     return cleaned;
   }

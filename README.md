@@ -6,11 +6,14 @@
 </p>
 
 <p align="center">
-  <a href="#-简体中文"><strong>🇨🇳 简体中文</strong></a> •
-  <a href="#-english"><strong>🇺🇸 English</strong></a> •
-  <a href="#-日本語"><strong>🇯🇵 日本語</strong></a> •
-  <a href="README_en.md"><strong>[ English File ]</strong></a> •
-  <a href="README_ja.md"><strong>[ 日本語ファイル ]</strong></a> •
+  <a href="README.md"><strong>🇨🇳 简体中文</strong></a> •
+  <a href="README_en.md"><strong>🇺🇸 English</strong></a> •
+  <a href="README_zh-TW.md"><strong>🇭🇰/🇹🇼 繁體中文</strong></a> •
+  <a href="README_ja.md"><strong>🇯🇵 日本語</strong></a> •
+  <a href="README_ko.md"><strong>🇰🇷 한국어</strong></a> •
+  <a href="README_ru.md"><strong>🇷🇺 Русский</strong></a> •
+  <a href="README_fr.md"><strong>🇫🇷 Français</strong></a> •
+  <a href="README_es.md"><strong>🇪🇸 Español</strong></a> •
   <a href="docs/human-simulation-algorithm.md"><strong>📐 算法规范 (Algorithm Spec)</strong></a>
 </p>
 
@@ -216,6 +219,7 @@ npm run build:server && eidolon service start
 | `eidolon service [start\|stop\|restart\|status]` | 控制 Go 服务端常驻守护进程 |
 | `eidolon logs [-n lines]` | 查看守护进程实时运行日志 |
 | `eidolon status` | 查看整体系统子系统与运行状态 |
+| `eidolon clear [--mode all|chat-memory]` | 三步交互式清理：完全清空(all-clear)或仅清理聊天记录与记忆(保留蒸馏结果) |
 
 [↑ 返回顶部 / Back to Top](#eidolon-v121)
 

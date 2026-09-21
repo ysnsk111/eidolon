@@ -141,9 +141,21 @@ program
 
 // 11. validate
 import { validateCommand } from './commands/validate.js';
+import { clearCommand } from './commands/clear.js';
+
 program
   .command('validate <packagePath>')
   .description('Validate an .eidolon bundle or directory against schemas')
   .action(validateCommand);
+
+// 12. clear
+program
+  .command('clear')
+  .description('Clear conversation logs, runtime memories, or all data with 3-step verification')
+  .option('-m, --mode <mode>', 'Clearance mode: all (All-Clear) or chat-memory (preserve personas)')
+  .option('-y, --yes', 'Skip step 2 confirmation prompt')
+  .option('--confirm', 'Skip step 3 verification code in automated environments')
+  .option('--force', 'Bypass interactive confirmation steps')
+  .action(clearCommand);
 
 program.parse(process.argv);

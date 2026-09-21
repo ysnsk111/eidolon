@@ -301,9 +301,19 @@ Output: JSON array of objects:
   }
 }]`;
 
-      const refined = await llmProvider.extract(JSON.stringify(sampleRecords), instructions, {
-        timeoutMs: 15000,
-      });
+      let refined = null;
+      try {
+        refined = await llmProvider.extract(JSON.stringify(sampleRecords), instructions, {
+          timeoutMs: 25000,
+        });
+      } catch (e) {
+        // Fallback to smaller 8-item sample if context limit or timeout
+        try {
+          refined = await llmProvider.extract(JSON.stringify(sampleRecords.slice(0, 8)), instructions, {
+            timeoutMs: 15000,
+          });
+        } catch (_) {}
+      }
 
       if (Array.isArray(refined) && refined.length > 0) {
         // Merge LLM summaries with statistical counts

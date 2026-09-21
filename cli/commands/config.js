@@ -1,6 +1,8 @@
 import { loadConfig, updateConfig, saveConfig } from '../utils/config.js';
 import { OpenAICompatibleProvider } from '../providers/openai-compatible.js';
 import { logger } from '../utils/logger.js';
+import { serviceCommand } from './service.js';
+import { setCurrentLanguage, t } from '../utils/i18n.js';
 import pc from 'picocolors';
 import ora from 'ora';
 
@@ -27,6 +29,19 @@ export async function configCommand(action, key, value) {
       } catch (_) {
         // Keep string if not valid JSON
       }
+
+      if (key === 'language' || key === 'lang') {
+        const langCode = setCurrentLanguage(parsedValue);
+        logger.success(`Updated language to: ${langCode}`);
+        console.log(pc.cyan(`\n${t('config.updated_lang', { lang: langCode })}`));
+        try {
+          await serviceCommand('restart');
+        } catch (err) {
+          logger.warn(`Could not auto-restart background service: ${err.message}`);
+        }
+        break;
+      }
+
       updateConfig(key, parsedValue);
       logger.success(`Updated config: ${key} = ${JSON.stringify(parsedValue)}`);
       break;

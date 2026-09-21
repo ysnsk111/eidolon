@@ -26,6 +26,7 @@ yarn-error.log*
 raw_data/
 completed_result/
 *.eidolon
+world_context.md
 
 # Dependencies & Build Artefacts
 node_modules/

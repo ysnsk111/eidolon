@@ -17,7 +17,12 @@ export function normalizeMessages(rawMessages, options = {}) {
   const cleaned = rawMessages
     .map((m, idx) => {
       const id = m.id || `msg_${String(idx + 1).padStart(6, '0')}`;
-      const sender = (m.sender || 'Unknown').trim();
+      let sender = (m.sender || 'Unknown').trim();
+      // Strip any accidental leading timestamps from sender name
+      sender = sender.replace(/^\[?\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:[,\sT]+\d{1,2}:\d{1,2}(?::\d{1,2})?)?\]?\s*/, '').trim();
+      sender = sender.replace(/^\[?\d{1,2}:\d{1,2}(?::\d{1,2})?\]?\s*/, '').trim();
+      if (!sender) sender = (m.sender || 'Unknown').trim();
+
       const content = cleanContent(m.content || '');
       const timestamp = parseTimestamp(m.timestamp || m.date || m.time);
       const mediaType = detectMediaType(content, m.mediaType);

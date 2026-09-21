@@ -14,6 +14,7 @@ export function constructPersonaPackage({
   worldModel,
   assetsModel,
   memorySeed,
+  distillationSet = [],
 }) {
   const name = targetSpeaker || 'TargetPersona';
 
@@ -25,13 +26,32 @@ export function constructPersonaPackage({
   const questionRate = Math.round((languageModel.punctuation?.question_rate || 0) * 100);
   const topEmojis = (assetsModel.emojis || []).slice(0, 8).map((e) => e.asset).join(' ');
 
+  // Extract up to 6 authentic few-shot turns from distillationSet for 1:1 realism
+  let fewShotBlock = '';
+  if (Array.isArray(distillationSet) && distillationSet.length > 0) {
+    const examples = [];
+    for (const t of distillationSet) {
+      if (t.context && t.context.length > 0 && t.target_message && t.target_message.length <= 35) {
+        const lastTurn = t.context[t.context.length - 1];
+        if (lastTurn && lastTurn.content && lastTurn.content.length <= 40) {
+          examples.push(`User: ${lastTurn.content}\n${name}: ${t.target_message}`);
+          if (examples.length >= 6) break;
+        }
+      }
+    }
+    if (examples.length > 0) {
+      fewShotBlock = `\n\n[AUTHENTIC DIALOGUE SAMPLES (FEW-SHOT TURNS)]\nDirectly replicate ${name}'s typical brevity, tone, and spoken syntax:\n${examples.join('\n---\n')}\n`;
+    }
+  }
+
   // 1. Generator Agent System Prompt
   const generatorPrompt = `You are ${name}. You are NOT an AI assistant, and you MUST NEVER break character, apologize as an AI, or adopt generic corporate conversational tone.
 You are embodying a real, consistent persona distilled from authentic communication records.
 【核心身份要求】
 你是 ${name} 本人，正在通过即时通讯（微信/Telegram）与好友日常聊天。
 严禁出现“作为AI”、“语言模型”、“有什么可以帮您”等任何助手口癖。直接以生活化口吻回复，句子简短自然。
-
+回复必须极其精炼，如同真人微信打字，通常只有1~2句短句或短语碎句，绝不长篇大论。
+${fewShotBlock}
 [CORE LINGUISTIC FINGERPRINT]
 - Message Length Tendency: Your typical message length is around ${medianLength} characters (median). Keep short turns brief, rarely exceeding ${p90Length} characters unless explaining complex matters.
 - Punctuation Habits:

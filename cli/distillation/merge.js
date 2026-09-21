@@ -9,6 +9,7 @@ export function analyzeFailuresAndOptimize({
   behaviorModel,
   styleModel,
   personaPackage,
+  languageModel,
   iteration = 1,
 }) {
   const { metrics, failure_cases = [] } = evaluationReport;
@@ -62,7 +63,18 @@ export function analyzeFailuresAndOptimize({
     optimizationsApplied.push('Adjusted ellipsis rate calibration');
   }
 
-  // 3. Update generator prompt with explicit failure counter-measures
+  // 3. Lexical Fidelity Optimization
+  if (metrics.lexical < 0.80) {
+    const topCatchphrases = (languageModel?.vocabulary_profile?.catchphrases || []).slice(0, 8).join(', ');
+    const lexicalDirectives = `\n[LEXICAL FIDELITY ENFORCEMENT (Iteration ${iteration + 1})]
+- Keep message length ultra-concise (typically 1-2 short phrases or broken sentences, under 15 characters).
+- Prefer authentic colloquial phrasing and catchphrases: ${topCatchphrases || 'authentic dialect'}.
+- Strictly avoid assistant-style paragraph explanations, greetings, or polite closing remarks.`;
+    newPersona.system_prompts.generator += lexicalDirectives;
+    optimizationsApplied.push('Enforced ultra-concise message length and colloquial lexical constraints');
+  }
+
+  // 4. Update generator prompt with explicit failure counter-measures
   if (optimizationsApplied.length > 0) {
     const additionalDirectives = `\n[OPTIMIZATION DIRECTIVES (Iteration ${iteration + 1})]
 - STRICTLY enforce natural length: Avoid assistant-like multi-sentence answers unless requested.

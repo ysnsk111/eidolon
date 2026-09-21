@@ -183,6 +183,7 @@ export async function runDistillationPipeline({
     worldModel,
     assetsModel,
     memorySeed,
+    distillationSet: splitResult.distillationSet,
   });
 
   logger.step(8, 8, 'Executing Offline Blind Evaluation against isolated test dataset...');
@@ -214,6 +215,7 @@ export async function runDistillationPipeline({
       behaviorModel,
       styleModel,
       personaPackage,
+      languageModel,
       iteration: optimizationRound,
     });
 
@@ -234,9 +236,10 @@ export async function runDistillationPipeline({
     });
   }
 
+  const cleanPackageTarget = detectedTarget.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]/g, '-').replace(/^-+|-+$/g, '') || 'target';
   const manifest = {
-    eidolon_version: '1.1.0',
-    package_name: `eidolon-persona-${detectedTarget.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+    eidolon_version: '1.3.0',
+    package_name: `eidolon-persona-${cleanPackageTarget}`,
     persona_id: personaId,
     created_at: new Date().toISOString(),
     dsi_score: evalReport.dsi,

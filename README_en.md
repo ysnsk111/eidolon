@@ -6,9 +6,14 @@
 </p>
 
 <p align="center">
-  <a href="README.md#-简体中文"><strong>🇨🇳 简体中文</strong></a> •
+  <a href="README.md"><strong>🇨🇳 简体中文</strong></a> •
   <a href="README_en.md"><strong>🇺🇸 English</strong></a> •
+  <a href="README_zh-TW.md"><strong>🇭🇰/🇹🇼 繁體中文</strong></a> •
   <a href="README_ja.md"><strong>🇯🇵 日本語</strong></a> •
+  <a href="README_ko.md"><strong>🇰🇷 한국어</strong></a> •
+  <a href="README_ru.md"><strong>🇷🇺 Русский</strong></a> •
+  <a href="README_fr.md"><strong>🇫🇷 Français</strong></a> •
+  <a href="README_es.md"><strong>🇪🇸 Español</strong></a> •
   <a href="docs/human-simulation-algorithm.md"><strong>📐 Algorithm Spec</strong></a>
 </p>
 
@@ -194,6 +199,7 @@ npm run build:server && eidolon service start
 | `eidolon service [start\|stop\|restart\|status]` | Control persistent Go background daemon service |
 | `eidolon logs [-n lines]` | Inspect live runtime daemon logs |
 | `eidolon status` | Display full runtime status across all subsystems |
+| `eidolon clear [--mode all|chat-memory]` | 3-step interactive clearance: complete purge (all-clear) or chats & memories only (preserves personas) |
 
 [↑ Back to Top](#eidolon-v121)
 

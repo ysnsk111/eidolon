@@ -11,6 +11,7 @@ import { serviceCommand } from './service.js';
 import { distillCommand } from './distill.js';
 import { logger } from '../utils/logger.js';
 import { initCommand } from './init.js';
+import { SUPPORTED_LANGUAGES, setCurrentLanguage, t } from '../utils/i18n.js';
 
 async function ask(rl, questionText, defaultValue = '') {
   const prompt = defaultValue ? `${questionText} [${defaultValue}]: ` : `${questionText}: `;
@@ -21,9 +22,9 @@ async function ask(rl, questionText, defaultValue = '') {
 
 export async function runOnboardingWizard(options = {}) {
   logger.divider();
-  console.log(pc.bold(pc.cyan('✨ 欢迎使用 EIDOLON — 人格蒸馏与记忆运行时 ✨')));
-  console.log(pc.bold('首次安装部署用户引导程序'));
-  console.log(pc.gray('本引导程序将逐步指导您完成模型连接、语料配置与机器人安全配对。\n注意：在完成前期参数配置前，机器人将保持静默暂不启动。'));
+  console.log(pc.bold(pc.cyan(`✨ ${t('app.welcome')} ✨`)));
+  console.log(pc.bold(t('app.subtitle')));
+  console.log(pc.gray(t('app.note_silent_bot')));
   logger.divider();
 
   // Ensure local DB & directories are initialized
@@ -50,10 +51,41 @@ export async function runOnboardingWizard(options = {}) {
 
   try {
     // -------------------------------------------------------------
+    // Step 0: Language Preference (8 languages)
+    // -------------------------------------------------------------
+    console.log(pc.bold(pc.yellow(`\n${t('wizard.step_lang')}`)));
+    console.log(pc.white('  1) English (Default)'));
+    console.log(pc.white('  2) 简体中文 (Simplified Chinese)'));
+    console.log(pc.white('  3) 繁體中文 (Traditional Chinese)'));
+    console.log(pc.white('  4) 日本語 (Japanese)'));
+    console.log(pc.white('  5) 한국어 (Korean)'));
+    console.log(pc.white('  6) Русский (Russian)'));
+    console.log(pc.white('  7) Français (French)'));
+    console.log(pc.white('  8) Español (Spanish)'));
+
+    let selectedLang = options.language || config.language || 'en';
+    if (!isNonInteractive) {
+      const choice = await ask(rl, `  ${t('wizard.select_lang_prompt')} (1-8)`, '1');
+      const langMap = {
+        '1': 'en',
+        '2': 'zh-CN',
+        '3': 'zh-TW',
+        '4': 'ja',
+        '5': 'ko',
+        '6': 'ru',
+        '7': 'fr',
+        '8': 'es',
+      };
+      selectedLang = langMap[choice.trim()] || (SUPPORTED_LANGUAGES.some((l) => l.code === choice.trim()) ? choice.trim() : 'en');
+    }
+    setCurrentLanguage(selectedLang);
+    console.log(pc.green(`  ✔ ${t('wizard.lang_set', { lang: selectedLang })}`));
+
+    // -------------------------------------------------------------
     // Step 1: LLM API Connection & Simple-Test (先不启动机器人)
     // -------------------------------------------------------------
-    console.log(pc.bold(pc.yellow('\n【步骤 1/5】连接语言模型 API (LLM API Configuration)')));
-    console.log(pc.gray('请配置兼容 OpenAI 接口标准的模型服务地址、鉴权 Key 与模型名称。'));
+    console.log(pc.bold(pc.yellow(`\n${t('wizard.step_llm')}`)));
+    console.log(pc.gray(t('wizard.llm_desc')));
 
     let apiReady = false;
     let baseUrl = options.llmBaseUrl || config.llm?.baseUrl || 'http://localhost:8083/v1';
@@ -62,13 +94,13 @@ export async function runOnboardingWizard(options = {}) {
 
     while (!apiReady) {
       if (!isNonInteractive) {
-        baseUrl = await ask(rl, '  • 模型 API 端点地址 (Base URL)', baseUrl);
-        apiKey = await ask(rl, '  • 模型 API Key (留空表示无)', apiKey);
-        model = await ask(rl, '  • 模型名称 (Model Name)', model);
+        baseUrl = await ask(rl, `  ${t('wizard.base_url_prompt')}`, baseUrl);
+        apiKey = await ask(rl, `  ${t('wizard.api_key_prompt')}`, apiKey);
+        model = await ask(rl, `  ${t('wizard.model_prompt')}`, model);
       }
 
-      console.log(pc.cyan('\n  正在对模型 API 执行 simple-test 连通性与可用性测试...'));
-      const spinner = ora('  发送测试握手请求至模型端点...').start();
+      console.log(pc.cyan(`\n  ${t('wizard.testing_api')}`));
+      const spinner = ora(`  ${t('wizard.test_sending')}`).start();
 
       const testProvider = new OpenAICompatibleProvider({
         baseUrl,
@@ -80,20 +112,20 @@ export async function runOnboardingWizard(options = {}) {
       const testRes = await testProvider.testConnection();
 
       if (testRes.ok) {
-        spinner.succeed(pc.green('  ✔ 模型 API simple-test 验证成功！回复正常，API 可用。'));
-        console.log(pc.gray(`    端点回复: "${testRes.response}"`));
+        spinner.succeed(pc.green(`  ${t('wizard.test_success')}`));
+        console.log(pc.gray(`    Endpoint response: "${testRes.response}"`));
         updateConfig('llm.baseUrl', baseUrl);
         updateConfig('llm.apiKey', apiKey);
         updateConfig('llm.model', model);
         apiReady = true;
       } else {
-        spinner.fail(pc.red(`  ✘ 模型 API 测试未通过: ${testRes.error}`));
+        spinner.fail(pc.red(`  ${t('wizard.test_failed', { error: testRes.error })}`));
         if (isNonInteractive) {
           throw new Error(`Model API test failed: ${testRes.error}`);
         }
-        const retry = await ask(rl, '  是否修改后重试 API 配置？[Y/n]', 'Y');
+        const retry = await ask(rl, `  ${t('wizard.test_retry')}`, 'Y');
         if (retry.toLowerCase() === 'n' || retry.toLowerCase() === 'no') {
-          console.log(pc.yellow('  已跳过 API 验证，使用当前输入配置保存。'));
+          console.log(pc.yellow(`  ${t('wizard.test_skipped')}`));
           updateConfig('llm.baseUrl', baseUrl);
           updateConfig('llm.apiKey', apiKey);
           updateConfig('llm.model', model);
@@ -103,28 +135,27 @@ export async function runOnboardingWizard(options = {}) {
     }
 
     // -------------------------------------------------------------
-    // Step 2: Distillation Data File Path
+    // Step 2: Distillation Data File Path & Context Backstory
     // -------------------------------------------------------------
-    console.log(pc.bold(pc.yellow('\n【步骤 2/5】指定蒸馏语料文件路径 (Distillation File Path)')));
-    console.log(pc.gray('请输入需要蒸馏的目标对象历史聊天记录文件路径（支持 PDF, JSON, HTML, TXT 格式）。'));
+    console.log(pc.bold(pc.yellow(`\n${t('wizard.step_distill_data')}`)));
 
     let distillFilePath = options.input || '';
     let fileValid = false;
 
     while (!fileValid) {
       if (!isNonInteractive) {
-        distillFilePath = await ask(rl, '  • 聊天记录文件路径 (Path to chat file)', distillFilePath || 'tests/fixtures/chat_sample.txt');
+        distillFilePath = await ask(rl, `  ${t('wizard.distill_path_prompt')}`, distillFilePath || 'tests/fixtures/chat_sample.txt');
       } else if (!distillFilePath) {
         distillFilePath = 'tests/fixtures/chat_sample.txt';
       }
 
       const absPath = path.resolve(process.cwd(), distillFilePath);
       if (fs.existsSync(absPath)) {
-        console.log(pc.green(`  ✔ 文件校验通过: ${absPath}`));
+        console.log(pc.green(`  ✔ Validated: ${absPath}`));
         distillFilePath = absPath;
         fileValid = true;
       } else {
-        console.log(pc.red(`  ✘ 指定的文件不存在: ${absPath}`));
+        console.log(pc.red(`  ${t('wizard.file_not_found', { path: absPath })}`));
         if (isNonInteractive) {
           throw new Error(`File not found: ${absPath}`);
         }
@@ -132,44 +163,32 @@ export async function runOnboardingWizard(options = {}) {
       }
     }
 
-    // -------------------------------------------------------------
-    // Step 3: Supplementary Worldview & Context
-    // -------------------------------------------------------------
-    console.log(pc.bold(pc.yellow('\n【步骤 3/5】补充背景设定与世界观 (Supplementary World Context)')));
-    console.log(pc.gray('继续追问：有什么需要补充的背景信息吗？'));
-    console.log(pc.gray('（补充的内容一般是聊天记录里不会出现的、大环境、世界观世界线、未言明的经历与关系背景等）'));
-
+    // Supplementary World Context
     let contextFilePath = options.context || null;
     let supplementText = options.supplementText || options.contextText || '';
 
     if (!isNonInteractive && !contextFilePath) {
-      console.log(pc.cyan('  提示：可直接输入一段文本补充说明，或输入已有设定文件路径（例如 world.md），无补充直接按回车跳过。'));
-      supplementText = await ask(rl, '  • 补充内容 / 背景文件路径', '');
+      supplementText = await ask(rl, `  ${t('wizard.world_context_prompt')}`, '');
     }
 
     if (supplementText) {
       const resolvedCheck = path.resolve(process.cwd(), supplementText);
       if (fs.existsSync(resolvedCheck) && fs.statSync(resolvedCheck).isFile()) {
         contextFilePath = resolvedCheck;
-        console.log(pc.green(`  ✔ 已挂载世界观设定文件: ${contextFilePath}`));
+        console.log(pc.green(`  ✔ Mounted context file: ${contextFilePath}`));
       } else {
-        // Save user's supplementary text to a local markdown file
         const configDir = getConfigDir();
         contextFilePath = path.join(configDir, 'world_context.md');
-        fs.writeFileSync(contextFilePath, `# EIDOLON 补充世界观与大环境设定\n\n${supplementText}\n`, 'utf-8');
-        console.log(pc.green(`  ✔ 已保存补充的世界观与大环境设定至: ${contextFilePath}`));
+        fs.writeFileSync(contextFilePath, `# EIDOLON Supplementary World Context\n\n${supplementText}\n`, 'utf-8');
+        console.log(pc.green(`  ${t('wizard.context_saved', { path: contextFilePath })}`));
       }
-    } else if (contextFilePath) {
-      console.log(pc.green(`  ✔ 使用指定背景设定文件: ${contextFilePath}`));
-    } else {
-      console.log(pc.gray('  ✔ 未提供补充信息，将直接基于聊天记录本身构建记忆与关系。'));
     }
 
     // -------------------------------------------------------------
-    // Step 4: Telegram Bot Token & User ID
+    // Step 3: Telegram Bot Token & User ID
     // -------------------------------------------------------------
-    console.log(pc.bold(pc.yellow('\n【步骤 4/5】Telegram 机器人与用户配对绑定 (Bot Token & User ID)')));
-    console.log(pc.gray('连接 Telegram 机器人并输入您自己的 User ID 进行首次保存。'));
+    console.log(pc.bold(pc.yellow(`\n${t('wizard.step_bot')}`)));
+    console.log(pc.gray(t('wizard.bot_desc')));
 
     let botToken = options.botToken || config.bot?.telegramToken || '8921441705:AAGUANTfr3NEyohWTy3Rwn9Ewebo8cusnTE';
     let botUsername = 'TelegramBot';
@@ -177,21 +196,21 @@ export async function runOnboardingWizard(options = {}) {
 
     while (!tokenValid) {
       if (!isNonInteractive) {
-        botToken = await ask(rl, '  • 请输入 Telegram Bot Token', botToken);
+        botToken = await ask(rl, `  ${t('wizard.bot_token_prompt')}`, botToken);
       }
 
       const verifyRes = await verifyBotToken(botToken);
       if (verifyRes.ok) {
         botUsername = verifyRes.username;
-        console.log(pc.green(`  ✔ Telegram Bot 连通成功: @${botUsername} (${verifyRes.firstName})`));
+        console.log(pc.green(`  ${t('wizard.bot_token_valid', { username: botUsername, firstName: verifyRes.firstName })}`));
         tokenValid = true;
       } else {
-        console.log(pc.red(`  ✘ Telegram Token 校验失败: ${verifyRes.error}`));
+        console.log(pc.red(`  ✘ Telegram Token verification failed: ${verifyRes.error}`));
         if (isNonInteractive) {
-          tokenValid = true; // allow in mock/test
+          tokenValid = true;
           break;
         }
-        const retry = await ask(rl, '  是否重新输入 Token？[Y/n]', 'Y');
+        const retry = await ask(rl, '  Retry entering token? [Y/n]', 'Y');
         if (retry.toLowerCase() === 'n' || retry.toLowerCase() === 'no') {
           tokenValid = true;
         }
@@ -202,21 +221,20 @@ export async function runOnboardingWizard(options = {}) {
     const defaultUserID = config.bot?.allowedUsers?.[0] || '8287471787';
     let tgUserID = options.userId || '';
     if (!isNonInteractive) {
-      tgUserID = await ask(rl, '  • 请输入您的 Telegram User ID 进行首次保存 (可在 TG 咨询 @userinfobot 获取)', defaultUserID);
+      tgUserID = await ask(rl, `  ${t('wizard.user_id_prompt')}`, defaultUserID);
     } else if (!tgUserID) {
       tgUserID = defaultUserID;
     }
 
-    // Save token and userID
     updateConfig('bot.telegramToken', botToken);
     updateConfig('bot.allowedUsers', [String(tgUserID).trim()]);
-    console.log(pc.green(`  ✔ Telegram Token 与 User ID (${tgUserID}) 已完成首次保存！`));
+    console.log(pc.green(`  ${t('wizard.user_id_saved', { userId: tgUserID })}`));
 
     // -------------------------------------------------------------
-    // Step 5: Start Robot and Pair via /start (启动机器人鉴权配对)
+    // Step 4: Launch Bot & Pairing
     // -------------------------------------------------------------
-    console.log(pc.bold(pc.yellow('\n【步骤 5/5】启动机器人并发送 /start 完成最后鉴权配对')));
-    console.log(pc.cyan('  正在启动 EIDOLON 运行时服务与 Telegram 机器人...'));
+    console.log(pc.bold(pc.yellow(`\n${t('wizard.step_auth')}`)));
+    console.log(pc.cyan(`  ${t('wizard.bot_launching')}`));
 
     try {
       const pidFile = path.join(getConfigDir(), 'eidolon.pid');
@@ -236,18 +254,18 @@ export async function runOnboardingWizard(options = {}) {
         await serviceCommand('start');
       }
     } catch (err) {
-      console.log(pc.yellow(`  启动服务提示: ${err.message}`));
+      console.log(pc.yellow(`  Service startup notice: ${err.message}`));
     }
 
     logger.divider();
-    console.log(pc.bold(pc.magenta('  📢 操作指引:')));
-    console.log(pc.bold(`  1. 请打开 Telegram，搜索并进入机器人私聊: ${pc.cyan('@' + botUsername)}`));
-    console.log(pc.bold(`  2. 向机器人发送指令: ${pc.green('/start')}`));
-    console.log(pc.gray('  机器人收到后将完成最后鉴权配对并自动清理配对指令。'));
+    console.log(pc.bold(pc.magenta('  📢 Instructions:')));
+    console.log(pc.bold(`  1. Open Telegram and find: ${pc.cyan('@' + botUsername)}`));
+    console.log(pc.bold(`  2. Send command: ${pc.green('/start')}`));
+    console.log(pc.gray(`  ${t('wizard.pairing_instructions', { username: botUsername })}`));
     logger.divider();
 
     if (!isNonInteractive) {
-      const spinner = ora('  等待 Telegram 鉴权配对中 (请在 Telegram 发送 /start)...').start();
+      const spinner = ora(`  ${t('wizard.waiting_pairing')}`).start();
       let paired = false;
       const pollStart = Date.now();
       const currentCfg = loadConfig();
@@ -269,38 +287,35 @@ export async function runOnboardingWizard(options = {}) {
       }
 
       if (paired) {
-        spinner.succeed(pc.green(`  ✔ 鉴权配对成功！机器人已正式与您的 Telegram 账号绑定！`));
+        spinner.succeed(pc.green(`  ${t('wizard.pairing_success', { userId: tgUserID })}`));
       } else {
-        spinner.info(pc.yellow('  提示：未能自动检测到 /start 或等待超时。若您已发送 /start，可继续下一步。'));
+        spinner.info(pc.yellow('  Note: Pairing detection timeout. If /start was already sent, you may proceed.'));
       }
     }
 
-    // Mark onboarding complete
     updateConfig('onboarded', true);
-    logger.success('EIDOLON 首次部署引导配置已全部完成！');
+    logger.success(t('wizard.complete_title'));
 
     // -------------------------------------------------------------
-    // Distillation Confirmation (通过cli确认是否启动蒸馏)
+    // Step 5: Distillation Confirmation
     // -------------------------------------------------------------
     logger.divider();
-    console.log(pc.bold(pc.cyan('🚀 人格蒸馏就绪确认')));
-    console.log(pc.gray('语料文件: ') + distillFilePath);
-    if (contextFilePath) console.log(pc.gray('世界观补充: ') + contextFilePath);
+    console.log(pc.bold(pc.cyan(`🚀 ${t('wizard.step_distill_confirm')}`)));
 
     let startDistill = 'Y';
     if (!isNonInteractive) {
-      startDistill = await ask(rl, '\n是否立即启动人格蒸馏？(可在 Telegram 机器人实时汇报进度) [Y/n]', 'Y');
+      startDistill = await ask(rl, `\n${t('wizard.confirm_distill_prompt')}`, 'Y');
     } else if (options.startDistill !== undefined) {
       startDistill = options.startDistill ? 'Y' : 'N';
     }
 
     if (startDistill.toLowerCase() === 'y' || startDistill.toLowerCase() === 'yes') {
-      logger.info('正在启动人格蒸馏引擎...');
+      logger.info(t('wizard.distill_started'));
       await distillCommand(distillFilePath, {
         context: contextFilePath,
       });
     } else {
-      console.log(pc.green('\n✔ 已跳过即时蒸馏。您随时可以在终端执行以下命令启动蒸馏:'));
+      console.log(pc.green(`\n✔ ${t('wizard.distill_later')}`));
       console.log(pc.cyan(`  eidolon distill "${distillFilePath}"${contextFilePath ? ` --context "${contextFilePath}"` : ''}`));
     }
   } finally {

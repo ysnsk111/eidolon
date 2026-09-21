@@ -111,30 +111,43 @@ async function generateEvaluationCandidate({
 }) {
   if (llmProvider) {
     try {
+      const recentContext = (context || []).slice(-6);
+      const directive = `\n\n[IMMEDIATE DIALOGUE ACTION]\nReply directly to the user as ${persona.target_speaker || 'yourself'}. Keep it concise, natural, and informal (1-2 short phrases, under 20 characters) just like real instant messaging. Do NOT output analysis, explanations, prefixes, or preamble.`;
       const messages = [
-        { role: 'system', content: persona.system_prompts.generator },
-        ...context.map((c) => ({
+        { role: 'system', content: `${persona.system_prompts.generator}${directive}` },
+        ...recentContext.map((c) => ({
           role: c.sender === persona.target_speaker ? 'assistant' : 'user',
           content: c.content,
         })),
       ];
 
       const res = await llmProvider.generate(messages, {
-        temperature: 0.7,
-        maxTokens: 512,
-        timeoutMs: 60000,
+        temperature: 0.6,
+        maxTokens: 256,
+        timeoutMs: 45000,
       });
 
-      // If output is JSON with candidates, parse candidate_a or return content
+      // If output is JSON with candidates, parse candidate_b (concise/playful) or candidate_a
       const parsed = llmProvider.parseJsonSafe(res.content, null);
-      if (parsed && (parsed.candidate_a || parsed.candidate_b || parsed.final_message)) {
-        return parsed.candidate_a || parsed.candidate_b || parsed.final_message;
+      let outputText = '';
+      if (parsed && (parsed.candidate_b || parsed.candidate_a || parsed.candidate_c || parsed.final_message)) {
+        outputText = parsed.candidate_b || parsed.candidate_a || parsed.candidate_c || parsed.final_message;
+      } else if (res.content && res.content.trim()) {
+        outputText = res.content.trim();
       }
-      if (res.content && res.content.trim()) {
-        return res.content.trim();
+
+      if (outputText) {
+        // Strip any speaker name prefix (e.g. "王雅雯: " or "AI: ")
+        outputText = outputText.replace(/^[^:：\n\r]{1,15}[:：]\s*/i, '').trim();
+        // If multiple lines, take first 1-2 lines
+        const lines = outputText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (lines.length > 0) {
+          return lines.slice(0, 2).join(' ');
+        }
+        return outputText;
       }
-    } catch (_) {
-      // Fall through to heuristic synthesizer
+    } catch (err) {
+      logger.warn(`Candidate generation fallback: ${err.message}`);
     }
   }
 
