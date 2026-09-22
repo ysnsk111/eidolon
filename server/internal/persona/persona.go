@@ -168,7 +168,9 @@ var defaultFallbackPersona = &LoadedPersona{
 // P0 Fix (Section 14): Connects active persona's behavior model directly to Runtime scheduler.
 func (lp *LoadedPersona) GetSchedulerConfig() scheduler.Config {
 	cfg := scheduler.Config{
-		BaseDelayMs:       3500,
+		BaseDelayMs:       3000,
+		MinDelayMs:        1500,
+		MaxDelayMs:        8000,
 		DoubleMessageProb: 0.08,
 	}
 	if lp == nil || lp.Behavior == nil {
@@ -181,6 +183,11 @@ func (lp *LoadedPersona) GetSchedulerConfig() scheduler.Config {
 	}
 
 	if bDelay := parseNum(rhythm["base_delay_ms"]); bDelay > 0 {
+		if bDelay > 8000 {
+			bDelay = 8000
+		} else if bDelay < 1500 {
+			bDelay = 1500
+		}
 		cfg.BaseDelayMs = bDelay
 	}
 	if dProb := parseFloat(rhythm["double_message_probability"]); dProb > 0 {
@@ -196,6 +203,12 @@ func (lp *LoadedPersona) GetSchedulerConfig() scheduler.Config {
 			}
 			b.MedianMs = parseNum(m["median_ms"])
 			b.P90Ms = parseNum(m["p90_ms"])
+			if b.MedianMs > 8000 {
+				b.MedianMs = 8000
+			}
+			if b.P90Ms > 12000 {
+				b.P90Ms = 12000
+			}
 			if samples := parseNum(m["sample_size"]); samples > 0 {
 				b.Samples = samples
 			} else {

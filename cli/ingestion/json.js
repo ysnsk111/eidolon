@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { normalizeMessages } from './normalize.js';
+import { isSystemNotice, isGroupAnnouncement } from './sanitize.js';
 
 export function parseJsonChat(filePath, options = {}) {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -47,6 +48,8 @@ export function parseJsonString(jsonString, options = {}) {
         text = `[${m.media_type}]`;
       }
 
+      if (isSystemNotice(text) || isGroupAnnouncement(text)) continue;
+
       rawMessages.push({
         id: `tg_${m.id}`,
         timestamp: m.date,
@@ -73,6 +76,9 @@ export function parseJsonString(jsonString, options = {}) {
       const sender =
         m.sender || m.from || m.author || m.speaker || m.role || (m.user ? m.user.name : 'Unknown');
       const content = m.content || m.text || m.message || m.body || '';
+      const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
+      if (isSystemNotice(contentStr) || isGroupAnnouncement(contentStr)) continue;
+
       const timestamp = m.timestamp || m.date || m.time || m.created_at || new Date().toISOString();
       const replyToId = m.replyToId || m.reply_to || m.reply_to_id || null;
 
@@ -80,7 +86,7 @@ export function parseJsonString(jsonString, options = {}) {
         id: m.id || `json_msg_${i + 1}`,
         timestamp,
         sender,
-        content: typeof content === 'string' ? content : JSON.stringify(content),
+        content: contentStr,
         replyToId,
         mediaType: m.media_type || m.mediaType || null,
         raw: JSON.stringify(m),

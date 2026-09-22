@@ -70,13 +70,15 @@ type Scheduler struct {
 // meaningful latency values must come from the persona's distilled LatencyModel.
 func NewScheduler(cfg Config) *Scheduler {
 	if cfg.MinDelayMs <= 0 {
-		cfg.MinDelayMs = 800
+		cfg.MinDelayMs = 1500
 	}
-	if cfg.MaxDelayMs <= 0 {
-		cfg.MaxDelayMs = 20000
+	if cfg.MaxDelayMs <= 0 || cfg.MaxDelayMs > 8000 {
+		cfg.MaxDelayMs = 8000
 	}
 	if cfg.BaseDelayMs <= 0 {
-		cfg.BaseDelayMs = 3500 // structural fallback only
+		cfg.BaseDelayMs = 3000 // structural fallback only
+	} else if cfg.BaseDelayMs > 8000 {
+		cfg.BaseDelayMs = 8000
 	}
 	if cfg.DoubleMessageProb <= 0 {
 		cfg.DoubleMessageProb = 0.08
@@ -93,13 +95,15 @@ func (s *Scheduler) UpdateConfig(cfg Config) {
 	defer s.mu.Unlock()
 
 	if cfg.MinDelayMs <= 0 {
-		cfg.MinDelayMs = 800
+		cfg.MinDelayMs = 1500
 	}
-	if cfg.MaxDelayMs <= 0 {
-		cfg.MaxDelayMs = 20000
+	if cfg.MaxDelayMs <= 0 || cfg.MaxDelayMs > 8000 {
+		cfg.MaxDelayMs = 8000
 	}
 	if cfg.BaseDelayMs <= 0 {
-		cfg.BaseDelayMs = 3500
+		cfg.BaseDelayMs = 3000
+	} else if cfg.BaseDelayMs > 8000 {
+		cfg.BaseDelayMs = 8000
 	}
 	if cfg.DoubleMessageProb <= 0 {
 		cfg.DoubleMessageProb = 0.08
@@ -163,8 +167,8 @@ func (s *Scheduler) CalculateScheduleAdvanced(replyText string, ctx SchedulingCo
 	rawTotal := int(adjustedMedian) + jitter
 	totalDelay := clamp(rawTotal, s.cfg.MinDelayMs, s.cfg.MaxDelayMs)
 
-	// 6. Typing indicator: 50-80% of total delay
-	typingIndicatorDuration := clamp(int(float64(totalDelay)*0.65), 500, totalDelay)
+	// 6. Typing indicator: 65% - 75% of total delay (reading delay: 25% - 35%)
+	typingIndicatorDuration := clamp(int(float64(totalDelay)*0.70), 0, totalDelay)
 
 	// 7. Message Splitting Planner (Section 9)
 	shouldDouble := false
@@ -238,7 +242,7 @@ func (s *Scheduler) CalculateScheduleAdvanced(replyText string, ctx SchedulingCo
 }
 
 // selectLatencyBucket picks the appropriate bucket by reply length and returns
-// (bucket name, base latency in ms). Falls back to BaseDelayMs if no data.
+// (bucket name, base latency in ms). Clamps bucket median into realistic human IM bounds [1500, 8000]ms.
 func (s *Scheduler) selectLatencyBucket(charCount int) (string, int) {
 	var b LatencyBucket
 	var name string
@@ -255,11 +259,23 @@ func (s *Scheduler) selectLatencyBucket(charCount int) (string, int) {
 		b = s.cfg.LatencyModel.Long
 	}
 
+	median := s.cfg.BaseDelayMs
 	if b.MedianMs > 0 {
-		return name, b.MedianMs
+		median = b.MedianMs
 	}
-	// No observed data for this bucket; fall back to BaseDelayMs
-	return name, s.cfg.BaseDelayMs
+
+	// Clamp bucket median into [1500, 8000] ms (respecting test-provided MinDelayMs if smaller)
+	minBound := 1500
+	if s.cfg.MinDelayMs > 0 && s.cfg.MinDelayMs < minBound {
+		minBound = s.cfg.MinDelayMs
+	}
+	maxBound := 8000
+	if s.cfg.MaxDelayMs > 0 && s.cfg.MaxDelayMs < maxBound {
+		maxBound = s.cfg.MaxDelayMs
+	}
+
+	median = clamp(median, minBound, maxBound)
+	return name, median
 }
 
 func clamp(val, min, max int) int {

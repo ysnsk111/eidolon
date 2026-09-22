@@ -1,4 +1,4 @@
-# EIDOLON v1.2.1
+# EIDOLON v1.3.1
 
 <p align="center">
   <strong>人格蒸餾、L4 動態關係狀態與生體記憶執行階段</strong><br>
@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.1%20(Formal)-blue.svg" alt="Release: v1.2.1 (Formal)">
+  <img src="https://img.shields.io/badge/Release-v1.3.1-blue.svg" alt="Release: v1.3.1">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
   <img src="https://img.shields.io/badge/SQLite-Native%20ACID-003B57.svg" alt="SQLite: Native ACID">
   <img src="https://img.shields.io/badge/L4%20State-BSM%20Engine-ff69b4.svg" alt="L4 State: BSM Engine">
-  <img src="https://img.shields.io/badge/Tests-38%20Passed-brightgreen.svg" alt="Tests: 38 Passed">
+  <img src="https://img.shields.io/badge/Tests-234%20Passed-brightgreen.svg" alt="Tests: 234 Passed">
 </p>
 
 ---

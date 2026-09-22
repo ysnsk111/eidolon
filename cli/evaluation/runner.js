@@ -124,21 +124,26 @@ async function generateEvaluationCandidate({
       const res = await llmProvider.generate(messages, {
         temperature: 0.6,
         maxTokens: 256,
-        timeoutMs: 45000,
+        timeoutMs: 15000,
       });
 
-      // If output is JSON with candidates, parse candidate_b (concise/playful) or candidate_a
-      const parsed = llmProvider.parseJsonSafe(res.content, null);
+      // Maintain direct single-pass candidate extraction with legacy fallback
+      let rawContent = (res.content || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      const parsed = llmProvider.parseJsonSafe(rawContent, null);
       let outputText = '';
       if (parsed && (parsed.candidate_b || parsed.candidate_a || parsed.candidate_c || parsed.final_message)) {
         outputText = parsed.candidate_b || parsed.candidate_a || parsed.candidate_c || parsed.final_message;
-      } else if (res.content && res.content.trim()) {
-        outputText = res.content.trim();
+      } else if (rawContent) {
+        outputText = rawContent;
       }
 
       if (outputText) {
         // Strip any speaker name prefix (e.g. "王雅雯: " or "AI: ")
         outputText = outputText.replace(/^[^:：\n\r]{1,15}[:：]\s*/i, '').trim();
+        // Strip outer quotation marks
+        if ((outputText.startsWith('"') && outputText.endsWith('"')) || (outputText.startsWith('“') && outputText.endsWith('”'))) {
+          outputText = outputText.slice(1, -1).trim();
+        }
         // If multiple lines, take first 1-2 lines
         const lines = outputText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
         if (lines.length > 0) {

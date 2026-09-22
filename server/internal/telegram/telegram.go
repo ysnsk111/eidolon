@@ -20,12 +20,13 @@ import (
 )
 
 type Config struct {
-	Token          string   `json:"token"`
-	AllowedUsers   []string `json:"allowed_users"`
-	PollTimeout    int      `json:"poll_timeout"`
-	SimulateTyping bool     `json:"simulate_typing"`
-	LogSalt        string   `json:"log_salt"`
-	ConfigPath     string   `json:"config_path"`
+	Token          string        `json:"token"`
+	AllowedUsers   []string      `json:"allowed_users"`
+	PollTimeout    int           `json:"poll_timeout"`
+	SimulateTyping bool          `json:"simulate_typing"`
+	LogSalt        string        `json:"log_salt"`
+	ConfigPath     string        `json:"config_path"`
+	DebounceWindow time.Duration `json:"debounce_window,omitempty"`
 }
 
 type BotService struct {
@@ -55,11 +56,12 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID int    `json:"message_id"`
-	From      *User  `json:"from"`
-	Chat      *Chat  `json:"chat"`
-	Date      int    `json:"date"`
-	Text      string `json:"text"`
+	MessageID      int      `json:"message_id"`
+	From           *User    `json:"from"`
+	Chat           *Chat    `json:"chat"`
+	Date           int      `json:"date"`
+	Text           string   `json:"text"`
+	ReplyToMessage *Message `json:"reply_to_message,omitempty"`
 }
 
 type User struct {
@@ -249,21 +251,268 @@ func (b *BotService) enqueueMessage(msg *Message) {
 	}
 }
 
+func isImmediateMessage(msg *Message, distilling bool) bool {
+	if distilling {
+		return true
+	}
+	if msg == nil {
+		return false
+	}
+	trimmedText := strings.TrimSpace(msg.Text)
+	lowerText := strings.ToLower(trimmedText)
+	if lowerText == "/start" || strings.HasPrefix(lowerText, "/start ") || strings.HasPrefix(lowerText, "/start@") {
+		return true
+	}
+	if strings.HasPrefix(lowerText, "/status") || strings.HasPrefix(lowerText, "/pair") {
+		return true
+	}
+	return false
+}
+
+func isQuestionMessage(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, "?") || strings.Contains(trimmed, "？") {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	interrogatives := []string{
+		"吗", "嘛", "呢", "啥", "什么", "怎么", "怎样", "如何",
+		"哪里", "哪儿", "哪个", "哪家", "几点", "什么时候",
+		"为什么", "为啥", "多少", "谁", "是不是", "能不能",
+		"要不要", "行不行", "有没有", "会不会", "可不可以", "好不好",
+	}
+	for _, term := range interrogatives {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	enPrefixes := []string{"what", "why", "where", "when", "who", "which", "how", "is", "are", "can", "could", "would", "will", "do", "does", "did"}
+	fields := strings.Fields(lower)
+	if len(fields) > 0 {
+		first := strings.Trim(fields[0], "!.,;:")
+		for _, p := range enPrefixes {
+			if first == p {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findTargetedQuestion(questions []*Message, responseText string) int {
+	if len(questions) < 2 {
+		return 0
+	}
+
+	cleanPunctuation := func(s string) string {
+		var b strings.Builder
+		for _, r := range s {
+			if strings.ContainsRune("?？!！。，,.~… \t\n\r/\\-+=", r) {
+				b.WriteRune(' ')
+				continue
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
+	}
+
+	cleanResponse := strings.ToLower(cleanPunctuation(responseText))
+
+	type scoredQ struct {
+		msgID int
+		score int
+	}
+	scores := make([]scoredQ, 0, len(questions))
+
+	stopwords := map[string]bool{
+		"吗": true, "嘛": true, "呢": true, "吧": true, "呀": true, "啊": true,
+		"啥": true, "什么": true, "怎么": true, "怎样": true, "如何": true,
+		"哪里": true, "哪儿": true, "哪个": true, "哪家": true, "什么时候": true,
+		"为什么": true, "为啥": true, "是不是": true, "能不能": true, "要不要": true,
+		"行不行": true, "有没有": true, "会不会": true, "可不可以": true, "好不好": true,
+		"你": true, "我": true, "他": true, "她": true, "它": true, "的": true, "了": true,
+		"what": true, "why": true, "where": true, "when": true, "who": true, "which": true,
+		"how": true, "is": true, "are": true, "the": true, "a": true, "an": true, "to": true,
+		"do": true, "does": true, "did": true, "can": true, "could": true, "would": true,
+	}
+
+	for _, q := range questions {
+		qClean := strings.ToLower(cleanPunctuation(q.Text))
+		score := 0
+
+		// English / whitespace-separated words
+		words := strings.Fields(qClean)
+		for _, w := range words {
+			if len(w) >= 3 && !stopwords[w] {
+				if strings.Contains(cleanResponse, w) {
+					score += 3
+				}
+			}
+		}
+
+		// Chinese CJK bigrams and characters
+		noSpaceQ := strings.ReplaceAll(qClean, " ", "")
+		runes := []rune(noSpaceQ)
+		for i := 0; i < len(runes)-1; i++ {
+			bigram := string(runes[i : i+2])
+			if !stopwords[bigram] && strings.Contains(cleanResponse, bigram) {
+				score += 3
+			}
+		}
+		for _, r := range runes {
+			charStr := string(r)
+			if !stopwords[charStr] && strings.Contains(cleanResponse, charStr) {
+				score += 1
+			}
+		}
+
+		scores = append(scores, scoredQ{msgID: q.MessageID, score: score})
+	}
+
+	bestID := 0
+	highestScore := 0
+	secondHighest := 0
+
+	for _, sq := range scores {
+		if sq.score > highestScore {
+			secondHighest = highestScore
+			highestScore = sq.score
+			bestID = sq.msgID
+		} else if sq.score > secondHighest {
+			secondHighest = sq.score
+		}
+	}
+
+	if highestScore >= 3 && highestScore > secondHighest {
+		return bestID
+	}
+
+	return 0
+}
+
+func (b *BotService) determineQuoteTarget(burst []*Message, res *runtime.GenerationResult) int {
+	if len(burst) == 0 {
+		return 0
+	}
+
+	// Priority 0: Explicit Orchestrator quote target if set
+	if res != nil && res.TargetQuoteMsgID > 0 {
+		return res.TargetQuoteMsgID
+	}
+
+	// Priority 1: Explicit earlier referenced turn (user quote-replied to an earlier message)
+	for _, m := range burst {
+		if m != nil && m.ReplyToMessage != nil {
+			return m.MessageID
+		}
+	}
+
+	// Priority 2: Multi-question burst targeting
+	var questions []*Message
+	for _, m := range burst {
+		if m != nil && isQuestionMessage(m.Text) {
+			questions = append(questions, m)
+		}
+	}
+
+	if len(questions) >= 2 && res != nil {
+		if targetID := findTargetedQuestion(questions, res.FinalMessage); targetID > 0 {
+			return targetID
+		}
+	}
+
+	// Rule 1: Default to direct send (zero quote-replying for standard dialogue turns)
+	return 0
+}
+
 func (b *BotService) sessionWorker(chatID int64, ch chan *Message) {
 	defer b.wg.Done()
+
+	debounceDuration := 3500 * time.Millisecond
+	if b.cfg.DebounceWindow > 0 {
+		debounceDuration = b.cfg.DebounceWindow
+	}
+	maxWindow := 10 * time.Second
+
+	var burst []*Message
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	var burstStart time.Time
+
+	flushBurst := func() {
+		if len(burst) == 0 {
+			return
+		}
+		toProcess := burst
+		burst = nil
+		if timer != nil {
+			timer.Stop()
+			timerC = nil
+		}
+		b.processDialogueTurn(toProcess)
+	}
+
 	for {
 		select {
 		case msg, ok := <-ch:
 			if !ok {
+				flushBurst()
 				return
 			}
-			b.handleIncoming(msg)
+
+			b.distillMu.Lock()
+			distilling := b.isDistilling
+			b.distillMu.Unlock()
+
+			if isImmediateMessage(msg, distilling) {
+				flushBurst()
+				b.handleIncoming(msg)
+				continue
+			}
+
+			// Dialogue message: add to burst debounce buffer
+			if len(burst) == 0 {
+				burstStart = time.Now()
+				burst = append(burst, msg)
+				timer = time.NewTimer(debounceDuration)
+				timerC = timer.C
+			} else {
+				burst = append(burst, msg)
+				if time.Since(burstStart) >= maxWindow {
+					flushBurst()
+				} else {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(debounceDuration)
+					timerC = timer.C
+				}
+			}
+
+		case <-timerC:
+			flushBurst()
+
 		case <-b.stopCh:
+			flushBurst()
 			for {
 				select {
 				case msg := <-ch:
-					b.handleIncoming(msg)
+					b.distillMu.Lock()
+					distilling := b.isDistilling
+					b.distillMu.Unlock()
+					if isImmediateMessage(msg, distilling) {
+						b.handleIncoming(msg)
+					} else {
+						burst = append(burst, msg)
+					}
 				default:
+					flushBurst()
 					return
 				}
 			}
@@ -346,37 +595,64 @@ func (b *BotService) handleIncoming(msg *Message) {
 		return
 	}
 
-	// Regular message orchestration
-	res, err := b.orch.ProcessMessage(sessionID, userIDStr, msg.Text)
+	// Regular message fallback if called directly
+	b.processDialogueTurn([]*Message{msg})
+}
+
+func (b *BotService) processDialogueTurn(burst []*Message) {
+	if len(burst) == 0 {
+		return
+	}
+
+	firstMsg := burst[0]
+	userIDStr := strconv.FormatInt(firstMsg.From.ID, 10)
+	sessionID := fmt.Sprintf("tg_chat_%d", firstMsg.Chat.ID)
+
+	var textParts []string
+	for _, m := range burst {
+		if m == nil {
+			continue
+		}
+		t := strings.TrimSpace(m.Text)
+		if t != "" {
+			textParts = append(textParts, t)
+		}
+	}
+	coalescedText := strings.Join(textParts, "\n")
+	if coalescedText == "" {
+		return
+	}
+
+	res, err := b.orch.ProcessMessage(sessionID, userIDStr, coalescedText)
 	if err != nil {
 		b.store.Log("telegram", "ERROR", fmt.Sprintf("Orchestrator error session=%s: %v", sessionID, err))
 		if strings.Contains(err.Error(), "no active persona") {
-			_, _ = b.sendMessage(msg.Chat.ID, "⚠️ EIDOLON 当前尚未激活人格模型。\n请在控制台执行 `eidolon persona activate <persona_id>` 激活人格后再与我对话。", msg.MessageID)
+			_, _ = b.sendMessage(firstMsg.Chat.ID, "⚠️ EIDOLON 当前尚未激活人格模型。\n请在控制台执行 `eidolon persona activate <persona_id>` 激活人格后再与我对话。", firstMsg.MessageID)
 		}
 		return
 	}
 
-	// Dynamic Human-like Lifecycle Timing (Sections 7, 8, 9):
-	// Phase 1: Reading/thinking delay (no typing indicator)
+	// Dynamic Human-like Lifecycle Timing (Sections 7, 8, 9, R4):
 	totalDelay := res.Schedule.TotalDelayMs
 	typingDuration := res.Schedule.TypingDurationMs
-	if totalDelay < 500 {
-		totalDelay = 500
+	if totalDelay < 0 {
+		totalDelay = 0
 	}
 	if typingDuration > totalDelay {
 		typingDuration = totalDelay
 	}
 	readingDelay := totalDelay - typingDuration
 
+	// Phase 1: Reading/thinking delay (silent, no typing indicator: 25% - 35% of total delay)
 	if readingDelay > 0 {
 		time.Sleep(time.Duration(readingDelay) * time.Millisecond)
 	}
 
-	// Phase 2: Typing Simulation (send typing action, refresh every 4s if long typing)
+	// Phase 2: Typing Simulation (send typing action, refresh every 4s if long typing: 65% - 75% of total delay)
 	if b.cfg.SimulateTyping && typingDuration > 0 {
 		remaining := typingDuration
 		for remaining > 0 {
-			_ = b.sendChatAction(msg.Chat.ID, "typing")
+			_ = b.sendChatAction(firstMsg.Chat.ID, "typing")
 			step := 4000
 			if remaining < step {
 				step = remaining
@@ -388,15 +664,20 @@ func (b *BotService) handleIncoming(msg *Message) {
 		time.Sleep(time.Duration(totalDelay) * time.Millisecond)
 	}
 
+	// Intelligent Contextual Quote-Replying:
+	// Default to 0 (direct send without quote-reply banner).
+	// Only set > 0 if explicit quote reference or multi-question burst targeted.
+	quoteTargetMsgID := b.determineQuoteTarget(burst, res)
+
 	// Phase 3: Complete message dispatch (with multi-message & double-message support)
 	var lastSentID int
 	if len(res.Schedule.Parts) > 1 {
 		for i, part := range res.Schedule.Parts {
 			replyID := 0
 			if i == 0 {
-				replyID = msg.MessageID
+				replyID = quoteTargetMsgID
 			}
-			id, err := b.sendMessage(msg.Chat.ID, part, replyID)
+			id, err := b.sendMessage(firstMsg.Chat.ID, part, replyID)
 			if err == nil {
 				lastSentID = id
 			}
@@ -406,22 +687,22 @@ func (b *BotService) handleIncoming(msg *Message) {
 					gapMs = res.Schedule.InterMessageGapsMs[i]
 				}
 				if b.cfg.SimulateTyping {
-					_ = b.sendChatAction(msg.Chat.ID, "typing")
+					_ = b.sendChatAction(firstMsg.Chat.ID, "typing")
 				}
 				time.Sleep(time.Duration(gapMs) * time.Millisecond)
 			}
 		}
 	} else if res.Schedule.ShouldDoubleMessage && res.Schedule.DoubleMessagePart1 != "" {
-		id1, _ := b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart1, msg.MessageID)
+		id1, _ := b.sendMessage(firstMsg.Chat.ID, res.Schedule.DoubleMessagePart1, quoteTargetMsgID)
 		lastSentID = id1
 		if b.cfg.SimulateTyping {
-			_ = b.sendChatAction(msg.Chat.ID, "typing")
+			_ = b.sendChatAction(firstMsg.Chat.ID, "typing")
 		}
 		time.Sleep(1200 * time.Millisecond)
-		id2, _ := b.sendMessage(msg.Chat.ID, res.Schedule.DoubleMessagePart2, 0)
+		id2, _ := b.sendMessage(firstMsg.Chat.ID, res.Schedule.DoubleMessagePart2, 0)
 		lastSentID = id2
 	} else {
-		id, _ := b.sendMessage(msg.Chat.ID, res.FinalMessage, msg.MessageID)
+		id, _ := b.sendMessage(firstMsg.Chat.ID, res.FinalMessage, quoteTargetMsgID)
 		lastSentID = id
 	}
 
@@ -432,11 +713,11 @@ func (b *BotService) handleIncoming(msg *Message) {
 			delay = 1800
 		}
 		time.Sleep(time.Duration(delay) * time.Millisecond)
-		_ = b.deleteMessage(msg.Chat.ID, lastSentID)
-		b.store.Log("telegram", "INFO", fmt.Sprintf("Post-send regret triggered: deleted message id=%d chat=%d", lastSentID, msg.Chat.ID))
+		_ = b.deleteMessage(firstMsg.Chat.ID, lastSentID)
+		b.store.Log("telegram", "INFO", fmt.Sprintf("Post-send regret triggered: deleted message id=%d chat=%d", lastSentID, firstMsg.Chat.ID))
 		if res.Plan.FollowupText != "" {
 			time.Sleep(600 * time.Millisecond)
-			_, _ = b.sendMessage(msg.Chat.ID, res.Plan.FollowupText, 0)
+			_, _ = b.sendMessage(firstMsg.Chat.ID, res.Plan.FollowupText, 0)
 		}
 	}
 }

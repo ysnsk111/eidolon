@@ -45,3 +45,5 @@ coverage/
 *.swo
 .DS_Store
 Thumbs.db
+SESSION_NOTES.md
+.agents/

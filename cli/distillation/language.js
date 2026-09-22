@@ -3,6 +3,11 @@
  * Implements statistical distribution calculations per Section 10 of the specification.
  */
 
+import {
+  isSystemNotice,
+  isGroupAnnouncement,
+} from '../ingestion/sanitize.js';
+
 export function extractLanguageFingerprint(messages, targetSpeaker) {
   const targetMsgs = messages.filter(
     (m) => (targetSpeaker ? m.sender.toLowerCase() === targetSpeaker.toLowerCase() : m.isTarget)
@@ -119,11 +124,11 @@ export function extractLanguageFingerprint(messages, targetSpeaker) {
       vocabulary[tok] = (vocabulary[tok] || 0) + 1;
 
       if (i < tokens.length - 1) {
-        const bi = `${tok} ${tokens[i + 1]}`;
+        const bi = joinNGramTokens(tok, tokens[i + 1]);
         bigrams[bi] = (bigrams[bi] || 0) + 1;
       }
       if (i < tokens.length - 2) {
-        const tri = `${tok} ${tokens[i + 1]} ${tokens[i + 2]}`;
+        const tri = joinTriGramTokens(tok, tokens[i + 1], tokens[i + 2]);
         trigrams[tri] = (trigrams[tri] || 0) + 1;
       }
     }
@@ -221,9 +226,48 @@ function getPercentile(sortedArray, p) {
   return sortedArray[lower] * (1 - weight) + sortedArray[upper] * weight;
 }
 
+const isCjk = (str) => typeof str === 'string' && /[\u4e00-\u9fa5]/.test(str);
+
+function joinNGramTokens(tokA, tokB) {
+  if (isCjk(tokA) && isCjk(tokB)) {
+    return `${tokA}${tokB}`;
+  }
+  return `${tokA} ${tokB}`;
+}
+
+function joinTriGramTokens(tokA, tokB, tokC) {
+  if (isCjk(tokA) && isCjk(tokB) && isCjk(tokC)) {
+    return `${tokA}${tokB}${tokC}`;
+  }
+  if (isCjk(tokA) && isCjk(tokB)) {
+    return `${tokA}${tokB} ${tokC}`;
+  }
+  if (isCjk(tokB) && isCjk(tokC)) {
+    return `${tokA} ${tokB}${tokC}`;
+  }
+  return `${tokA} ${tokB} ${tokC}`;
+}
+
 function tokenize(text) {
-  // Tokenize mixed Chinese and English text
-  // Extract Chinese character sequences, English words, emojis, numbers
+  if (!text || typeof text !== 'string') return [];
+  // Use Intl.Segmenter for word-level segmentation without artificial spaces
+  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+    const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
+    const emojiRegex = /[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0F}\u{200D}]+/u;
+    const tokens = [];
+    for (const { segment, isWordLike } of segmenter.segment(text)) {
+      const trimmed = segment.trim();
+      if (!trimmed) continue;
+      if (isWordLike) {
+        tokens.push(trimmed.toLowerCase());
+      } else if (emojiRegex.test(trimmed)) {
+        tokens.push(trimmed);
+      }
+    }
+    return tokens;
+  }
+
+  // Fallback regex matching words and characters
   const tokens = [];
   const regex = /[\u4e00-\u9fa5]|[a-zA-Z0-9']+|[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0F}\u{200D}]+/gu;
   let match;
@@ -240,15 +284,27 @@ function getTopK(freqMap, k = 20) {
     .map(([token, count]) => ({ token, count }));
 }
 
+const CHINESE_STOPWORDS = new Set([
+  '这个', '那个', '什么', '怎么', '不是', '因为', '所以', '但是', '我们', '你们', '他们',
+  '自己', '一个', '一下', '还是', '觉得', '可以', '没有', '现在', '知道', '这样', '那样',
+  '如果', '为了', '而且', '或者', '可能', '应该', '已经', '图片', '照片', '文字', '消息',
+  '群聊', '公告', '的话', '然后', '不过', '只是', '其实', '特别', '非常', '比较',
+  '图 片', '这 个', '那 个', '什 么', '怎 么', '不 是', '一 个', '一 下', '还 是', '觉 得',
+  '可 以', '没 有', '现 在', '知 道', '这 样', '那 样', '如 果', '为 了', '而 且', '或 者',
+  '是 我', '我 是', '你 是', '他 是', '在 吗', '在 呢',
+]);
+
 function extractCatchphrases(texts, vocabMap, biMap) {
-  // Detect habitual expressions (phrases that appear disproportionately often)
+  // Detect habitual expressions across sentences
   const phrases = [];
   const patterns = [
-    /^(好(呀|的|吧|呗|嘛))/i,
-    /^(知道啦|收到|好嘞)/i,
-    /^(哈哈哈+|2333+|hh+|hhh+)/i,
-    /^(确实|对呀|没关系|没事)/i,
-    /^(拜拜|晚安|明天见|先去忙啦)/i,
+    /好(呀|的|吧|呗|嘛|嘞|哇|滴)/i,
+    /知道啦|收到|好嘞/i,
+    /哈哈哈+|2333+|笑死|笑出声|太逗了|太搞笑了|hh+|hhh+/i,
+    /确实|对(呀|的|滴|啊)|没问题|行(呀|的|啊|嘞)|妥妥|ok/i,
+    /没事(儿|呀|啦)?|没关系|不客气(啦)?|懂了就好/i,
+    /早(呀|安|上好)?|晚安(安)?|明天见|先去忙啦|拜拜(啦)?|去睡啦/i,
+    /救命|绝了|神了|我天|离谱|尊嘟假嘟|我的妈|真的假的|天哪|好家伙/i,
   ];
 
   for (const text of texts) {
@@ -260,26 +316,51 @@ function extractCatchphrases(texts, vocabMap, biMap) {
     }
   }
 
+  // Detect repeated whole short sentences (length 2-12)
+  const sentenceCounts = {};
+  for (const text of texts) {
+    const rawSentences = text.split(/[。！？!?；;\n]+/).map((s) => s.trim()).filter(Boolean);
+    for (const s of rawSentences) {
+      if (s.length >= 2 && s.length <= 12 && !CHINESE_STOPWORDS.has(s) && !isSystemNotice(s) && !isGroupAnnouncement(s)) {
+        sentenceCounts[s] = (sentenceCounts[s] || 0) + 1;
+      }
+    }
+  }
+  const repeatedSentences = Object.entries(sentenceCounts)
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([sentence]) => sentence);
+
   const phraseCounts = {};
   for (const p of phrases) {
     phraseCounts[p] = (phraseCounts[p] || 0) + 1;
   }
 
   const topPhrases = getTopK(phraseCounts, 10).map((item) => item.token);
-  // Also add top 5 bigrams if they are frequent
-  const topBi = getTopK(biMap, 5)
-    .filter((b) => b.count >= 2)
+
+  // Add top bigrams only if clean, frequent, and not stopwords
+  const topBi = getTopK(biMap, 20)
+    .filter((b) => {
+      if (b.count < 2) return false;
+      const tok = b.token.trim();
+      if (CHINESE_STOPWORDS.has(tok)) return false;
+      if (tok.includes('图片') || tok.includes('image')) return false;
+      if (isSystemNotice(tok) || isGroupAnnouncement(tok)) return false;
+      // Reject any bigram with artificial space between Chinese characters
+      if (/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(tok)) return false;
+      return tok.length >= 2 && tok.length <= 15;
+    })
+    .slice(0, 5)
     .map((b) => b.token);
 
-  return Array.from(new Set([...topPhrases, ...topBi]));
+  return Array.from(new Set([...topPhrases, ...repeatedSentences, ...topBi]));
 }
 
 function extractOpenersAndClosers(messages, targetSpeaker) {
   const openers = [];
   const closers = [];
 
-  // An opener is the first message in a conversation session sent by the target
-  // A closer is the final message in a session sent by the target
   const sessionGapMs = 25 * 60 * 1000;
   let sessionStart = true;
 
@@ -287,15 +368,27 @@ function extractOpenersAndClosers(messages, targetSpeaker) {
     const m = messages[i];
     const isTarget = targetSpeaker ? m.sender.toLowerCase() === targetSpeaker.toLowerCase() : m.isTarget;
 
-    if (sessionStart && isTarget && m.content.length <= 40) {
-      openers.push(m.content);
+    const cleaned = (m.content || '')
+      .replace(/^#{1,6}\s+.*$/gm, '')
+      .replace(/\[(?:图片|image|photo|sticker|表情包|动画表情|语音|视频)\]/gi, '')
+      .trim();
+
+    const isValidCandidate =
+      cleaned.length >= 2 &&
+      cleaned.length <= 30 &&
+      !isSystemNotice(cleaned) &&
+      !isGroupAnnouncement(cleaned) &&
+      !cleaned.startsWith('#');
+
+    if (sessionStart && isTarget && isValidCandidate) {
+      openers.push(cleaned);
       sessionStart = false;
     }
 
     const nextMsg = messages[i + 1];
     if (!nextMsg || nextMsg.epochMs - m.epochMs > sessionGapMs) {
-      if (isTarget && m.content.length <= 40) {
-        closers.push(m.content);
+      if (isTarget && isValidCandidate) {
+        closers.push(cleaned);
       }
       sessionStart = true;
     }

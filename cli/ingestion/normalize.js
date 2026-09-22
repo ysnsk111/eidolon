@@ -1,6 +1,4 @@
-/**
- * EIDOLON Canonical Chat Normalizer & Turn Builder
- */
+import { sanitizeMessage } from './sanitize.js';
 
 export function normalizeMessages(rawMessages, options = {}) {
   if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
@@ -23,9 +21,14 @@ export function normalizeMessages(rawMessages, options = {}) {
       sender = sender.replace(/^\[?\d{1,2}:\d{1,2}(?::\d{1,2})?\]?\s*/, '').trim();
       if (!sender) sender = (m.sender || 'Unknown').trim();
 
-      const content = cleanContent(m.content || '');
+      const sanitized = sanitizeMessage(m.content || '', m.mediaType);
+      if (sanitized.isSystem) {
+        return null;
+      }
+
+      const content = sanitized.content;
       const timestamp = parseTimestamp(m.timestamp || m.date || m.time);
-      const mediaType = detectMediaType(content, m.mediaType);
+      const mediaType = sanitized.mediaType || detectMediaType(content, m.mediaType);
 
       return {
         id,
@@ -39,6 +42,7 @@ export function normalizeMessages(rawMessages, options = {}) {
         metadata: m.metadata || {},
       };
     })
+    .filter(Boolean)
     .filter((m) => m.content.length > 0 || m.mediaType !== 'text');
 
   // 2. Sort chronologically
@@ -122,10 +126,7 @@ function createSessionObj(sessionId, sessionMessages) {
 
 function cleanContent(text) {
   if (typeof text !== 'string') return '';
-  return text
-    .replace(/[\u200B-\u200D\uFEFF]/g, '') // remove zero-width chars
-    .replace(/\r\n/g, '\n')
-    .trim();
+  return sanitizeMessage(text).content;
 }
 
 function parseTimestamp(raw) {

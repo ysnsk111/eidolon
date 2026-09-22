@@ -4,6 +4,8 @@
  * Contains 1:1 complete, exhaustive agent system prompts.
  */
 
+import { isSystemNotice, isGroupAnnouncement } from '../ingestion/sanitize.js';
+
 export function constructPersonaPackage({
   personaId,
   targetSpeaker,
@@ -26,23 +28,11 @@ export function constructPersonaPackage({
   const questionRate = Math.round((languageModel.punctuation?.question_rate || 0) * 100);
   const topEmojis = (assetsModel.emojis || []).slice(0, 8).map((e) => e.asset).join(' ');
 
+  // Format contextual emoji bindings (eliminating fallback to '😊 ✨')
+  const emojiBlock = formatContextualEmojiBindings(assetsModel);
+
   // Extract up to 6 authentic few-shot turns from distillationSet for 1:1 realism
-  let fewShotBlock = '';
-  if (Array.isArray(distillationSet) && distillationSet.length > 0) {
-    const examples = [];
-    for (const t of distillationSet) {
-      if (t.context && t.context.length > 0 && t.target_message && t.target_message.length <= 35) {
-        const lastTurn = t.context[t.context.length - 1];
-        if (lastTurn && lastTurn.content && lastTurn.content.length <= 40) {
-          examples.push(`User: ${lastTurn.content}\n${name}: ${t.target_message}`);
-          if (examples.length >= 6) break;
-        }
-      }
-    }
-    if (examples.length > 0) {
-      fewShotBlock = `\n\n[AUTHENTIC DIALOGUE SAMPLES (FEW-SHOT TURNS)]\nDirectly replicate ${name}'s typical brevity, tone, and spoken syntax:\n${examples.join('\n---\n')}\n`;
-    }
-  }
+  const fewShotBlock = buildFewShotBlock(distillationSet, name, counterpartSpeaker);
 
   // 1. Generator Agent System Prompt
   const generatorPrompt = `You are ${name}. You are NOT an AI assistant, and you MUST NEVER break character, apologize as an AI, or adopt generic corporate conversational tone.
@@ -59,7 +49,7 @@ ${fewShotBlock}
   * Question frequency: ${questionRate}% of messages involve asking or confirming.
   * Terminal Punctuation: Frequently omit trailing full stops ('。' or '.') in casual dialog turns, preserving natural conversational flow.
 - Catchphrases & Preferred Vocabulary: ${vocabPhrases || 'Natural spoken idioms'}.
-- Emoji Habit: Selectively use emojis matching historical sentiment contexts: ${topEmojis || '😊 ✨'}. Do NOT spam emojis randomly; use them conditionally when joking, agreeing, or expressing genuine warmth.
+${emojiBlock}
 
 [BEHAVIORAL POLICY MATRIX]
 1. When teasing/banter: Respond with witty banter, gentle pushback, or playful deflections. Never sound subservient or sycophantic.
@@ -72,18 +62,10 @@ ${fewShotBlock}
 - Never invent facts contradicting established episodic history or supplied context.
 - If relevant past conversation examples are provided, replicate the rhythm, sentence breaks, and sentiment tone demonstrated in those examples.
 
-[CANDIDATE GENERATION CONTRACT]
-When generating response candidates, produce 3 distinct candidate variants:
-- Candidate A: Natural baseline response (typical length, standard tone).
-- Candidate B: Concise / playful response (shorter, higher emotional or witty flavor).
-- Candidate C: Context-grounded / thoughtful response (referencing shared background or memory if applicable).
-Format output as JSON:
-{
-  "candidate_a": string,
-  "candidate_b": string,
-  "candidate_c": string,
-  "strategy_applied": string
-}`;
+[DIRECT CASUAL IM DIALOGUE CONTRACT]
+Reply directly as ${name} in 1-2 short phrases or broken sentences (10-25 characters), exactly as in real-time WeChat/Telegram instant messaging.
+Omit trailing periods and formal pleasantries. Use natural colloquial syntax, authentic catchphrases, and contextual emojis.
+Do NOT output JSON, meta-analysis, markdown quotes, or candidate prefixes. Output only the immediate spoken reply text.`;
 
   // 2. Style Critic Agent System Prompt
   const criticPrompt = `You are the EIDOLON Independent Style Critic.
@@ -119,7 +101,7 @@ Your sole responsibility is to polish candidate responses that did not fully mee
 [REWRITE PRINCIPLES]
 - Eliminate any AI tropes: Never include "作为AI", "如果你需要帮助", "我理解你的感受", or sterile corporate phrases.
 - Adjust length: If flagged as too verbose, ruthlessly trim unnecessary words to reach the ~${medianLength} character target.
-- Tune punctuation and emojis: Insert or remove emojis (${topEmojis}) and ellipses to match ${name}'s fingerprint.
+- Tune punctuation and emojis: Insert or remove emojis (${topEmojis || 'characteristic emojis'}) and ellipses to match ${name}'s fingerprint.
 - Preserve conversational authenticity: Maintain the user's intent while ensuring the voice sounds unmistakably like ${name}.
 
 Output strictly JSON:
@@ -221,4 +203,157 @@ Output strictly JSON:
   };
 
   return persona;
+}
+
+function formatContextualEmojiBindings(assetsModel) {
+  const emojis = assetsModel?.emojis || [];
+  if (emojis.length === 0) {
+    return `- Emoji Habit: Rarely or never uses emojis in casual text. Rely on authentic punctuation, particles, and colloquial phrasing instead of emojis.`;
+  }
+
+  const contextMap = {};
+  for (const e of emojis) {
+    for (const ctx of e.contexts || []) {
+      if (ctx === 'casual_chat') continue;
+      if (!contextMap[ctx]) contextMap[ctx] = [];
+      if (!contextMap[ctx].includes(e.asset)) {
+        contextMap[ctx].push(e.asset);
+      }
+    }
+  }
+
+  const ctxLabels = {
+    joking: 'When joking or teasing',
+    pleading_cute: 'When asking, acting cute or pleading',
+    tired_sleep: 'When tired or saying goodnight',
+    teasing_banter: 'When teasing or banter',
+    affection: 'When expressing warmth or affection',
+    agreement: 'When agreeing or acknowledging',
+    celebration: 'When celebrating or encouraging',
+    sadness: 'When sad or sympathetic',
+    frustration: 'When frustrated or annoyed',
+    thinking: 'When curious or pondering',
+    greeting_closing: 'When greeting or signing off',
+  };
+
+  const lines = ['- Emoji Habits & Contextual Bindings:'];
+  let hasSpecificContext = false;
+  for (const [ctx, label] of Object.entries(ctxLabels)) {
+    if (contextMap[ctx] && contextMap[ctx].length > 0) {
+      hasSpecificContext = true;
+      lines.push(`  * ${label}: ${contextMap[ctx].slice(0, 3).join(', ')}`);
+    }
+  }
+
+  const topAll = emojis.slice(0, 6).map((e) => e.asset).join(' ');
+  if (!hasSpecificContext && topAll) {
+    lines.push(`  * Characteristic emojis: ${topAll}`);
+  }
+
+  lines.push(`  * Frequency & Style: Use characteristic emojis conditionally (~10-20% of turns). Never spam generic assistant emojis.`);
+  return lines.join('\n');
+}
+
+function buildFewShotBlock(distillationSet, name, counterpartSpeaker) {
+  if (!Array.isArray(distillationSet) || distillationSet.length === 0) {
+    return '';
+  }
+
+  const defaultCounterpart = counterpartSpeaker || 'User';
+
+  function isCleanTurnContent(text) {
+    if (!text || typeof text !== 'string') return false;
+    const trimmed = text.trim();
+    if (trimmed.length === 0 || trimmed.length > 50) return false;
+    if (trimmed.startsWith('#') || trimmed.includes('###')) return false;
+    if (/\[(?:图片|image|photo|sticker|表情包|动画表情|语音|视频)\]/i.test(trimmed)) return false;
+    if (isGroupAnnouncement(trimmed) || isSystemNotice(trimmed)) return false;
+    return true;
+  }
+
+  function categorizePhase(turnText, contextText) {
+    const combined = `${contextText} ${turnText}`;
+    if (/(早|晚安|在吗|哈喽|嗨|hi|hello)/i.test(combined)) return 'opener_closer';
+    if (/(好呀|好的|收到|行呀|没问题|确实|哈哈|笨蛋|逗)/i.test(combined)) return 'banter_agreement';
+    if (/(累|困|难过|抱抱|救命|呜呜|🥺|😴)/i.test(combined)) return 'emotional';
+    return 'casual';
+  }
+
+  // Filter valid turns
+  const cleanTurns = [];
+  for (const t of distillationSet) {
+    if (!t.context || t.context.length === 0 || !t.target_message) continue;
+    const targetMsg = t.target_message.trim();
+    if (!isCleanTurnContent(targetMsg)) continue;
+
+    // Coalesce burst messages from the counterpart immediately preceding target response
+    const precedingContext = [];
+    for (let i = t.context.length - 1; i >= 0; i--) {
+      const msg = t.context[i];
+      const sender = msg.sender || defaultCounterpart;
+      if (precedingContext.length === 0 || sender === precedingContext[0].sender) {
+        precedingContext.unshift(msg);
+      } else {
+        break;
+      }
+    }
+
+    const counterpartSender = precedingContext[0]?.sender || defaultCounterpart;
+    const counterpartTexts = precedingContext
+      .map((m) => (m.content || '').trim())
+      .filter((c) => isCleanTurnContent(c));
+
+    if (counterpartTexts.length === 0) continue;
+
+    const joinedCounterpart = counterpartTexts.join('\n');
+    if (joinedCounterpart.length > 60) continue;
+
+    const phase = categorizePhase(targetMsg, joinedCounterpart);
+    cleanTurns.push({
+      counterpartSender,
+      counterpartText: joinedCounterpart,
+      targetText: targetMsg,
+      phase,
+    });
+  }
+
+  if (cleanTurns.length === 0) return '';
+
+  // Select up to 6 turns ensuring phase diversity
+  const selected = [];
+  const phaseBuckets = {
+    opener_closer: [],
+    banter_agreement: [],
+    emotional: [],
+    casual: [],
+  };
+
+  for (const item of cleanTurns) {
+    phaseBuckets[item.phase].push(item);
+  }
+
+  // Draw from diverse phases
+  const desiredOrder = ['opener_closer', 'banter_agreement', 'emotional', 'casual', 'banter_agreement', 'opener_closer'];
+  for (const ph of desiredOrder) {
+    if (phaseBuckets[ph].length > 0) {
+      selected.push(phaseBuckets[ph].shift());
+      if (selected.length >= 6) break;
+    }
+  }
+
+  // If still fewer than 6, fill from remaining clean turns
+  if (selected.length < 6) {
+    for (const item of cleanTurns) {
+      if (!selected.includes(item)) {
+        selected.push(item);
+        if (selected.length >= 6) break;
+      }
+    }
+  }
+
+  const examples = selected.map(
+    (s) => `${s.counterpartSender}: ${s.counterpartText}\n${name}: ${s.targetText}`
+  );
+
+  return `\n\n[AUTHENTIC DIALOGUE SAMPLES (FEW-SHOT TURNS)]\nDirectly replicate ${name}'s typical brevity, tone, and spoken syntax:\n${examples.join('\n---\n')}\n`;
 }

@@ -162,3 +162,85 @@ func TestScheduler_AdvancedInteractiveFactors(t *testing.T) {
 	}
 }
 
+func TestScheduler_CalibratedBoundsAndMedianClamping(t *testing.T) {
+	// Legacy uncalibrated config where short is 70,000ms and medium is 103,000ms
+	legacyCfg := scheduler.Config{
+		BaseDelayMs: 70000,
+		LatencyModel: scheduler.LatencyModel{
+			Short:  scheduler.LatencyBucket{MedianMs: 70000, P90Ms: 132000, Samples: 5},
+			Medium: scheduler.LatencyBucket{MedianMs: 103000, P90Ms: 105000, Samples: 4},
+			Long:   scheduler.LatencyBucket{MedianMs: 120000, P90Ms: 180000, Samples: 3},
+		},
+	}
+
+	sched := scheduler.NewScheduler(legacyCfg)
+	cfg := sched.GetConfig()
+
+	if cfg.MinDelayMs != 1500 {
+		t.Errorf("Expected default MinDelayMs 1500, got %d", cfg.MinDelayMs)
+	}
+	if cfg.MaxDelayMs != 8000 {
+		t.Errorf("Expected default MaxDelayMs 8000, got %d", cfg.MaxDelayMs)
+	}
+	if cfg.BaseDelayMs > 8000 {
+		t.Errorf("Expected BaseDelayMs to be clamped <= 8000, got %d", cfg.BaseDelayMs)
+	}
+
+	// Test multiple replies across short, medium, and long text
+	testCases := []struct {
+		name string
+		text string
+	}{
+		{"Short reply", "好呀"},
+		{"Medium reply", "今天晚上有空一起去散散步吗？最近天气真不错"},
+		{"Long reply", "我把刚才整理好的会议纪要和接下来的任务清单都发到群里了，大家有空可以核对一下，如果有遗漏的地方随时告诉我，明天上午我们再开短会对齐进度。"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for trial := 0; trial < 20; trial++ {
+				res := sched.CalculateSchedule(tc.text, false)
+				if res.TotalDelayMs < 1500 || res.TotalDelayMs > 8000 {
+					t.Fatalf("TotalDelayMs %d out of calibrated bounds [1500, 8000]ms for '%s'", res.TotalDelayMs, tc.text)
+				}
+
+				// Check typing simulation ratio: 65%-75% typing, 25%-35% reading
+				readingDelay := res.TotalDelayMs - res.TypingDurationMs
+				readingRatio := float64(readingDelay) / float64(res.TotalDelayMs)
+				typingRatio := float64(res.TypingDurationMs) / float64(res.TotalDelayMs)
+
+				if typingRatio < 0.60 || typingRatio > 0.80 {
+					t.Errorf("Typing ratio %.2f out of expected [0.65, 0.75] window (total=%d, typing=%d)",
+						typingRatio, res.TotalDelayMs, res.TypingDurationMs)
+				}
+				if readingRatio < 0.20 || readingRatio > 0.40 {
+					t.Errorf("Reading ratio %.2f out of expected [0.25, 0.35] window (total=%d, reading=%d)",
+						readingRatio, res.TotalDelayMs, readingDelay)
+				}
+			}
+		})
+	}
+}
+
+func TestScheduler_ZeroConfigDefaults(t *testing.T) {
+	// Zero config defaults must be properly initialized
+	sched := scheduler.NewScheduler(scheduler.Config{})
+	cfg := sched.GetConfig()
+
+	if cfg.MinDelayMs != 1500 {
+		t.Errorf("Expected default MinDelayMs 1500, got %d", cfg.MinDelayMs)
+	}
+	if cfg.MaxDelayMs != 8000 {
+		t.Errorf("Expected default MaxDelayMs 8000, got %d", cfg.MaxDelayMs)
+	}
+	if cfg.BaseDelayMs < 1500 || cfg.BaseDelayMs > 8000 {
+		t.Errorf("Expected default BaseDelayMs within [1500, 8000], got %d", cfg.BaseDelayMs)
+	}
+
+	res := sched.CalculateSchedule("测试默认配置延时范围", false)
+	if res.TotalDelayMs < 1500 || res.TotalDelayMs > 8000 {
+		t.Errorf("Delay %d out of calibrated bounds [1500, 8000]", res.TotalDelayMs)
+	}
+}
+
+

@@ -42,6 +42,16 @@ func NewOrchestrator(
 	sched *scheduler.Scheduler,
 	llmCfg LLMConfig,
 ) *Orchestrator {
+	timeout := 15 * time.Second
+	if llmCfg.TimeoutMs > 0 {
+		timeout = time.Duration(llmCfg.TimeoutMs) * time.Millisecond
+		if timeout < 5*time.Second {
+			timeout = 5 * time.Second
+		} else if timeout > 15*time.Second {
+			timeout = 15 * time.Second
+		}
+	}
+
 	return &Orchestrator{
 		store:      store,
 		personaMgr: personaMgr,
@@ -49,8 +59,15 @@ func NewOrchestrator(
 		sched:      sched,
 		relEngine:  relationship.NewEngine(),
 		llmCfg:     llmCfg,
-		client:     &http.Client{Timeout: 45 * time.Second},
+		client:     &http.Client{Timeout: timeout},
 	}
+}
+
+func (o *Orchestrator) GetClientTimeout() time.Duration {
+	if o.client == nil {
+		return 0
+	}
+	return o.client.Timeout
 }
 
 func (o *Orchestrator) GetPersonaManager() *persona.PersonaManager {
@@ -76,13 +93,14 @@ type CriticResult struct {
 }
 
 type GenerationResult struct {
-	FinalMessage string                    `json:"final_message"`
-	Schedule     scheduler.ScheduleResult  `json:"schedule"`
-	CandidateA   string                    `json:"candidate_a"`
-	CandidateB   string                    `json:"candidate_b"`
-	CandidateC   string                    `json:"candidate_c"`
-	Critic       CriticResult              `json:"critic"`
-	Plan         relationship.ResponsePlan `json:"plan"`
+	FinalMessage     string                    `json:"final_message"`
+	TargetQuoteMsgID int                       `json:"target_quote_msg_id,omitempty"`
+	Schedule         scheduler.ScheduleResult  `json:"schedule"`
+	CandidateA       string                    `json:"candidate_a"`
+	CandidateB       string                    `json:"candidate_b,omitempty"`
+	CandidateC       string                    `json:"candidate_c,omitempty"`
+	Critic           CriticResult              `json:"critic"`
+	Plan             relationship.ResponsePlan `json:"plan"`
 }
 
 func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*GenerationResult, error) {
@@ -148,39 +166,27 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	}
 	messages = append(messages, map[string]string{"role": "user", "content": userContent})
 
-	// 4. Candidate Generation via LLM (A/B/C)
-	rawGen, err := o.callLLM(messages, 0.7, 350)
-	var candA, candB, candC string
+	// 4. Direct Single-Pass Candidate Generation via LLM (eliminating 3-candidate JSON overhead)
+	rawGen, err := o.callLLM(messages, 0.7, 200)
+	var generatedText string
 
 	if err == nil {
-		cleaned := cleanOutput(rawGen)
-		jsonStr := extractJSON(cleaned)
-		var candMap struct {
-			CandidateA string `json:"candidate_a"`
-			CandidateB string `json:"candidate_b"`
-			CandidateC string `json:"candidate_c"`
-		}
-		if jsonErr := json.Unmarshal([]byte(jsonStr), &candMap); jsonErr == nil && candMap.CandidateA != "" {
-			candA = candMap.CandidateA
-			candB = candMap.CandidateB
-			candC = candMap.CandidateC
-		} else {
-			candA = cleaned
-		}
+		generatedText = cleanSinglePassOutput(rawGen, activeP.Persona.TargetSpeaker)
 	}
 
-	if candA == "" {
-		candA = "在呢，怎么啦~"
+	fallbackResponse := getPersonaFallback(activeP, userContent)
+	if generatedText == "" {
+		generatedText = fallbackResponse
 	}
 
-	// 5. Style Critic Pipeline (A/B/C -> best candidate)
-	// P0-9 Fix: CriticScore is no longer hard-coded to 0.88.
-	// If the critic LLM call is unavailable, critic.status = "not_run" and score = nil.
-	selected, criticResult := o.runCriticPipeline(activeP.Persona.SystemPrompts.Critic, candA, candB, candC)
+	// 5. Honest Style Critic: bypassed from online IM generation path (Section 18 & Interface Contract)
+	criticResult := CriticResult{
+		Status: "not_run",
+		Score:  nil,
+	}
 
-	// 6. sanitizeOutput: AI artifact guard (renamed from pseudo "Style Critic")
-	// This is NOT the Style Critic; it is a hard safety guardrail.
-	finalResponse := sanitizeOutput(selected, activeP.Persona.TargetSpeaker)
+	// 6. sanitizeOutput: hard safety guardrail stripping genuine AI identity artifacts
+	finalResponse := SanitizeOutput(generatedText, activeP.Persona.TargetSpeaker, fallbackResponse)
 
 	// 7. Memory Candidate Extraction & Version Superseding Deltas (Section 10 & 12)
 	// Does not write directly to DB; returns memory delta items for atomic commit.
@@ -249,9 +255,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	return &GenerationResult{
 		FinalMessage: finalResponse,
 		Schedule:     scheduleRes,
-		CandidateA:   candA,
-		CandidateB:   candB,
-		CandidateC:   candC,
+		CandidateA:   finalResponse,
 		Critic:       criticResult,
 		Plan:         plan,
 	}, nil
@@ -328,21 +332,52 @@ func (o *Orchestrator) runCriticPipeline(criticPrompt, candA, candB, candC strin
 	}
 }
 
-// sanitizeOutput is a hard safety guardrail that removes AI identity artifacts.
-// P0-8 Fix: Instead of leaking "[sanitized]" to human chat partners, it strips
-// offending AI disclaimer clauses or falls back to an authentic persona line.
-func sanitizeOutput(text, personaName string) string {
-	aiMarkers := []string{
-		"opencode", "人工智能", "语言模型", "有什么可以帮您", "有什么我可以帮您",
-		"作为AI", "作为一名AI", "作为一个AI", "作为一个人工智能", "as an AI", "I'm an AI",
-		"想让我做什么", "需要我做什么", "有什么指令", "处理任务", "其他指令",
-		"很高兴为您服务", "请问有什么可以协助", "相关的任务", "为您解答", "请告诉我您的需求",
-		"我能为您做些什么", "请提供更多上下文", "作为您的", "有什么吩咐", "收到数字",
+// SanitizeOutput is a hard safety guardrail that removes genuine AI identity artifacts.
+// It prunes overbroad keywords so that innocent colloquial sentences are never stripped,
+// and ensures 0% fallback to the repetitive "在呢，怎么啦~" boilerplate.
+func SanitizeOutput(text, personaName string, fallbackVoice ...string) string {
+	if strings.TrimSpace(text) == "" {
+		if len(fallbackVoice) > 0 && strings.TrimSpace(fallbackVoice[0]) != "" {
+			return strings.TrimSpace(fallbackVoice[0])
+		}
+		if personaName != "" {
+			return "刚才在忙呢，怎么啦？"
+		}
+		return "在忙呢，稍等下哦"
 	}
+
+	aiMarkers := []string{
+		"作为ai",
+		"作为一名ai",
+		"作为一个ai",
+		"作为一个人工智能",
+		"作为人工智能",
+		"作为一个语言模型",
+		"作为一个大型语言模型",
+		"作为虚拟助手",
+		"作为ai助手",
+		"我是ai",
+		"我是一个ai",
+		"我是人工智能",
+		"我是由openai训练",
+		"语言模型",
+		"as an ai",
+		"i'm an ai",
+		"i am an ai",
+		"有什么可以帮您",
+		"有什么我可以帮您",
+		"很高兴为您服务",
+		"请问有什么可以协助",
+		"我能为您做些什么",
+		"请告诉我您的需求",
+		"为您解答",
+		"opencode",
+	}
+
 	textLower := strings.ToLower(text)
 	hasMarker := false
 	for _, marker := range aiMarkers {
-		if strings.Contains(textLower, strings.ToLower(marker)) {
+		if isAIMarkerMatch(textLower, marker) {
 			hasMarker = true
 			break
 		}
@@ -354,7 +389,12 @@ func sanitizeOutput(text, personaName string) string {
 	// Try removing the AI disclaimer sentences
 	cleaned := text
 	for _, marker := range aiMarkers {
-		re := regexp.MustCompile(`(?i)[^。！？\n]*` + regexp.QuoteMeta(marker) + `[^。！？\n]*[。！？\n]?`)
+		var re *regexp.Regexp
+		if marker == "我是ai" || marker == "作为ai" || strings.HasSuffix(marker, "ai") {
+			re = regexp.MustCompile(`(?i)[^。！？\n]*` + regexp.QuoteMeta(marker) + `(?:[^a-zA-Z0-9。！？\n][^。！？\n]*[。！？\n]?|[。！？\n]|$)`)
+		} else {
+			re = regexp.MustCompile(`(?i)[^。！？\n]*` + regexp.QuoteMeta(marker) + `[^。！？\n]*[。！？\n]?`)
+		}
 		cleaned = re.ReplaceAllString(cleaned, "")
 	}
 	cleaned = strings.TrimSpace(cleaned)
@@ -362,11 +402,189 @@ func sanitizeOutput(text, personaName string) string {
 		return cleaned
 	}
 
-	// Fallback to authentic colloquial companion response if message was AI boilerplate
-	if personaName != "" {
-		return "在呢，怎么啦~"
+	// Fallback to authentic colloquial companion response if message was AI boilerplate (0% "在呢，怎么啦~")
+	if len(fallbackVoice) > 0 && strings.TrimSpace(fallbackVoice[0]) != "" {
+		return strings.TrimSpace(fallbackVoice[0])
 	}
-	return "在呢~"
+	if personaName != "" {
+		return "刚才在忙呢，怎么啦？"
+	}
+	return "在忙呢，稍等下哦"
+}
+
+func sanitizeOutput(text, personaName string, fallbackVoice ...string) string {
+	return SanitizeOutput(text, personaName, fallbackVoice...)
+}
+
+func isAIMarkerMatch(textLower, marker string) bool {
+	if marker == "我是ai" || marker == "作为ai" || strings.HasSuffix(marker, "ai") {
+		idx := 0
+		for {
+			pos := strings.Index(textLower[idx:], marker)
+			if pos == -1 {
+				return false
+			}
+			matchPos := idx + pos
+			afterPos := matchPos + len(marker)
+			if afterPos < len(textLower) {
+				nextChar := textLower[afterPos]
+				if (nextChar >= 'a' && nextChar <= 'z') || (nextChar >= '0' && nextChar <= '9') {
+					idx = afterPos
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return strings.Contains(textLower, marker)
+}
+
+func getPersonaFallback(activeP *persona.LoadedPersona, userContent string) string {
+	if activeP != nil {
+		// 1. Try to use distilled openers if available
+		if fp, ok := activeP.Persona.LinguisticFingerprint["openers"]; ok {
+			if openers, ok := fp.([]string); ok && len(openers) > 0 && strings.TrimSpace(openers[0]) != "" {
+				return strings.TrimSpace(openers[0])
+			}
+			if openers, ok := fp.([]interface{}); ok && len(openers) > 0 {
+				if s, ok := openers[0].(string); ok && strings.TrimSpace(s) != "" {
+					return strings.TrimSpace(s)
+				}
+			}
+		}
+
+		// 2. Try catchphrases
+		if vocab, ok := activeP.Persona.LinguisticFingerprint["vocabulary"].(map[string]interface{}); ok {
+			if cp, ok := vocab["catchphrases"]; ok {
+				if phrases, ok := cp.([]string); ok && len(phrases) > 0 && strings.TrimSpace(phrases[0]) != "" {
+					return strings.TrimSpace(phrases[0]) + "，刚才走开了一下"
+				}
+				if phrases, ok := cp.([]interface{}); ok && len(phrases) > 0 {
+					if s, ok := phrases[0].(string); ok && strings.TrimSpace(s) != "" {
+						return strings.TrimSpace(s) + "，刚才走开了一下"
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Contextual conversational response based on user input
+	userLower := strings.ToLower(userContent)
+	if strings.Contains(userLower, "早") {
+		return "早呀，刚看到消息~"
+	}
+	if strings.Contains(userLower, "晚安") || strings.Contains(userLower, "睡") {
+		return "好梦呀，明天聊！"
+	}
+	if strings.Contains(userLower, "哈哈") {
+		return "哈哈哈刚才在忙呢"
+	}
+	if strings.Contains(userLower, "在吗") || strings.Contains(userLower, "在嘛") {
+		return "在的在的，刚才在忙"
+	}
+	if strings.Contains(userLower, "？") || strings.Contains(userLower, "?") {
+		return "刚刚在忙呢，怎么啦？"
+	}
+
+	return "刚才走开了一下，怎么啦？"
+}
+
+func cleanSinglePassOutput(text, targetSpeaker string) string {
+	cleaned := cleanOutput(text)
+
+	// If output was wrapped in markdown code block, extract it
+	if strings.HasPrefix(cleaned, "```json") {
+		cleaned = strings.TrimPrefix(cleaned, "```json")
+		if idx := strings.LastIndex(cleaned, "```"); idx != -1 {
+			cleaned = cleaned[:idx]
+		}
+	} else if strings.HasPrefix(cleaned, "```") {
+		cleaned = strings.TrimPrefix(cleaned, "```")
+		if idx := strings.LastIndex(cleaned, "```"); idx != -1 {
+			cleaned = cleaned[:idx]
+		}
+	}
+	cleaned = strings.TrimSpace(cleaned)
+
+	// If output is legacy JSON with candidates or message field, unwrap safely
+	if strings.HasPrefix(cleaned, "{") && strings.HasSuffix(cleaned, "}") {
+		var candMap struct {
+			CandidateA   string `json:"candidate_a"`
+			CandidateB   string `json:"candidate_b"`
+			CandidateC   string `json:"candidate_c"`
+			Reply        string `json:"reply"`
+			FinalMessage string `json:"final_message"`
+			Message      string `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(cleaned), &candMap); err == nil {
+			if candMap.CandidateA != "" {
+				cleaned = candMap.CandidateA
+			} else if candMap.CandidateB != "" {
+				cleaned = candMap.CandidateB
+			} else if candMap.CandidateC != "" {
+				cleaned = candMap.CandidateC
+			} else if candMap.FinalMessage != "" {
+				cleaned = candMap.FinalMessage
+			} else if candMap.Reply != "" {
+				cleaned = candMap.Reply
+			} else if candMap.Message != "" {
+				cleaned = candMap.Message
+			}
+		}
+	}
+	cleaned = strings.TrimSpace(cleaned)
+
+	// Repeatedly strip speaker prefixes and surrounding quotes safely without UTF-8 byte tearing
+	var reSpeaker *regexp.Regexp
+	if targetSpeaker != "" {
+		reSpeaker = regexp.MustCompile(`^(?i)` + regexp.QuoteMeta(targetSpeaker) + `[:：]\s*`)
+	}
+	reCommonPrefix := regexp.MustCompile(`^(?i)(?:AI|Assistant|助手|回复|答|说)[:：]\s*`)
+
+	for {
+		prev := cleaned
+		if reSpeaker != nil {
+			cleaned = reSpeaker.ReplaceAllString(cleaned, "")
+		}
+		cleaned = reCommonPrefix.ReplaceAllString(cleaned, "")
+		cleaned = strings.TrimSpace(cleaned)
+
+		// Strip surrounding quotes safely without byte slicing multibyte UTF-8
+		if strings.HasPrefix(cleaned, "\"") && strings.HasSuffix(cleaned, "\"") && len(cleaned) >= 2 {
+			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "\""), "\"")
+		} else if strings.HasPrefix(cleaned, "'") && strings.HasSuffix(cleaned, "'") && len(cleaned) >= 2 {
+			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "'"), "'")
+		} else if strings.HasPrefix(cleaned, "“") && strings.HasSuffix(cleaned, "”") {
+			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "“"), "”")
+		} else if strings.HasPrefix(cleaned, "‘") && strings.HasSuffix(cleaned, "’") {
+			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "‘"), "’")
+		}
+		cleaned = strings.TrimSpace(cleaned)
+
+		if cleaned == prev {
+			break
+		}
+	}
+
+	// Strip trailing periods for casual IM style
+	cleaned = strings.TrimRight(cleaned, "。.")
+
+	// If multiple lines, take first 1-2 non-empty lines
+	lines := strings.Split(cleaned, "\n")
+	var nonEmpties []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			nonEmpties = append(nonEmpties, trimmed)
+		}
+	}
+	if len(nonEmpties) > 2 {
+		cleaned = strings.Join(nonEmpties[:2], " ")
+	} else if len(nonEmpties) > 0 {
+		cleaned = strings.Join(nonEmpties, " ")
+	}
+
+	return strings.TrimSpace(cleaned)
 }
 
 func (o *Orchestrator) callLLM(messages []map[string]string, temp float64, maxTokens int) (string, error) {
@@ -421,13 +639,39 @@ func (o *Orchestrator) callLLM(messages []map[string]string, temp float64, maxTo
 }
 
 func cleanOutput(text string) string {
-	re := regexp.MustCompile(`(?s)<think>.*?</think>`)
-	cleaned := re.ReplaceAllString(text, "")
-	cleaned = strings.TrimPrefix(cleaned, "</think>")
-	if idx := strings.Index(cleaned, "<think>"); idx != -1 {
-		cleaned = cleaned[:idx]
+	re := regexp.MustCompile(`(?i)(?s)<think>.*?</think>`)
+	cleaned := text
+	for {
+		next := re.ReplaceAllString(cleaned, "")
+		if next == cleaned {
+			break
+		}
+		cleaned = next
+	}
+	// Strip any remaining dangling closing tag and preceding thought (e.g. from nested <think> tags)
+	for {
+		idx := strings.Index(strings.ToLower(cleaned), "</think>")
+		if idx == -1 {
+			break
+		}
+		cleaned = cleaned[idx+len("</think>"):]
+	}
+	reOpen := regexp.MustCompile(`(?i)<think>`)
+	if loc := reOpen.FindStringIndex(cleaned); loc != nil {
+		cleaned = cleaned[:loc[0]]
 	}
 	return strings.TrimSpace(cleaned)
+}
+
+// CleanOutput strips thinking tags from LLM response text.
+func CleanOutput(text string) string {
+	return cleanOutput(text)
+}
+
+// CleanSinglePassOutput processes raw LLM generation by stripping think tags, markdown fences,
+// repeated speaker prefixes, surrounding quotes (safely without UTF-8 byte tearing), and casual trailing punctuation.
+func CleanSinglePassOutput(text, targetSpeaker string) string {
+	return cleanSinglePassOutput(text, targetSpeaker)
 }
 
 func extractJSON(text string) string {

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import * as cheerio from 'cheerio';
 import { normalizeMessages } from './normalize.js';
+import { isSystemNotice, isGroupAnnouncement } from './sanitize.js';
 
 export function parseHtmlChat(filePath, options = {}) {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -21,6 +22,8 @@ export function parseHtmlString(htmlString, options = {}) {
 
   $('.message').each((i, el) => {
     const $el = $(el);
+    if ($el.hasClass('service')) return; // Skip Telegram service message elements
+
     const id = $el.attr('id') || `html_msg_${i + 1}`;
 
     const fromNameEl = $el.find('.from_name');
@@ -31,7 +34,7 @@ export function parseHtmlString(htmlString, options = {}) {
     const dateTitle = $el.find('.date').attr('title') || $el.find('.date').text().trim();
     const text = $el.find('.text').text().trim();
 
-    if (text) {
+    if (text && !isSystemNotice(text) && !isGroupAnnouncement(text)) {
       rawMessages.push({
         id,
         timestamp: dateTitle || new Date().toISOString(),

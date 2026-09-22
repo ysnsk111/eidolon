@@ -1,5 +1,11 @@
 import fs from 'node:fs';
 import { normalizeMessages } from './normalize.js';
+import {
+  isDateHeader,
+  extractDateFromHeader,
+  isGroupAnnouncement,
+  isSystemNotice,
+} from './sanitize.js';
 
 export function parseMdChat(filePath, options = {}) {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -47,6 +53,22 @@ export function parseMdString(rawText, options = {}) {
 
     // Skip horizontal rules
     if (/^[-*_]{3,}$/.test(line.trim())) continue;
+
+    // Standalone date or session separator header: ### 2026-05-27
+    if (isDateHeader(line)) {
+      if (currentMsg) {
+        rawMessages.push(currentMsg);
+        currentMsg = null;
+      }
+      const extractedDate = extractDateFromHeader(line);
+      if (extractedDate) {
+        const parsed = new Date(extractedDate);
+        if (!isNaN(parsed.getTime())) {
+          simulatedEpoch = parsed.getTime();
+        }
+      }
+      continue;
+    }
 
     let match = line.match(pHeaderDateSender);
     if (match && match[2] && match[2].trim()) {
@@ -149,6 +171,24 @@ export function parseMdString(rawText, options = {}) {
         };
         continue;
       }
+    }
+
+    // Non-message Markdown headers (e.g. # Title, ## Section)
+    if (/^#{1,6}\s+/.test(line)) {
+      if (currentMsg) {
+        rawMessages.push(currentMsg);
+        currentMsg = null;
+      }
+      continue;
+    }
+
+    // System notices and group announcements
+    if (isSystemNotice(line) || isGroupAnnouncement(line)) {
+      if (currentMsg) {
+        rawMessages.push(currentMsg);
+        currentMsg = null;
+      }
+      continue;
     }
 
     // Message line continuation

@@ -1,4 +1,4 @@
-# EIDOLON v1.2.1
+# EIDOLON v1.3.1
 
 <p align="center">
   <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.1%20(Formal)-blue.svg" alt="Release: v1.2.1 (Formal)">
+  <img src="https://img.shields.io/badge/Release-v1.3.1-blue.svg" alt="Release: v1.3.1">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
   <img src="https://img.shields.io/badge/SQLite-Native%20ACID-003B57.svg" alt="SQLite: Native ACID">
   <img src="https://img.shields.io/badge/L4%20State-BSM%20Engine-ff69b4.svg" alt="L4 State: BSM Engine">
-  <img src="https://img.shields.io/badge/Tests-38%20Passed-brightgreen.svg" alt="Tests: 38 Passed">
+  <img src="https://img.shields.io/badge/Tests-234%20Passed-brightgreen.svg" alt="Tests: 234 Passed">
 </p>
 
 ---
@@ -548,10 +548,37 @@ npm run build:server && eidolon service start
 | `eidolon logs [-n lines]` | デーモンのリアルタイムログの閲覧 |
 | `eidolon status` | システム全体のステータス確認 |
 
-[↑ 返回顶部 / Back to Top](#eidolon-v121)
+[↑ 返回顶部 / Back to Top](#eidolon-v131)
 
 ---
 
-## 8. License
+## 8. Changelog / 更新日志
+
+### v1.3.1 (2026-09-22)
+
+**🚀 核心改进 / Core Improvements**
+
+- **突发消息防抖合并 (Burst Debounce Buffer)**: 用户在 3.5 秒内连续发送多条消息时，自动聚合为单一上下文再生成回复，避免重复触发。
+- **直接发送 / 取消无条件引用 (Direct Send)**: 删除对每条消息都强制 `reply_parameters` 的行为；仅在多问题突发场景中按语义匹配决定是否 quote-reply。
+- **单遍直接生成 (Single-Pass Generation)**: 废弃 3 候选 JSON + Critic 二次 LLM 轮次，改为单次直接生成，减少延迟并消除 `"在呢，怎么啦~"` 兜底回退。
+- **蒸馏噪声过滤 (Distillation Noise Filtering)**: 严格过滤 MD 标题 (`### 日期`)、群聊公告 (`我是群聊...`)、图片占位符 (`[图片]`) 等系统干扰内容，保证 few-shot 样本纯度。
+- **Emoji 上下文建模 (Contextual Emoji Modeling)**: 重构 emoji 提取与注入逻辑，使用真实对话情绪映射取代通用默认 emoji。
+- **延迟模型校准 (Latency Calibration)**: 修复分钟量化时间戳导致的 60,000ms 延迟异常，校准至真实 IM 交互范围 (2-8 秒)。
+- **上下文溢出保护**: 二分 chunking + 滑动窗口 HTTP fallback，防止超长历史破坏 LLM 请求。
+- **Markdown 摄入解析器**: 新增 `cli/ingestion/md.js` 支持多种 MD 聊天导出格式。
+- **8 语言国际化**: 完整 i18n 支持 EN/ZH-CN/ZH-TW/JA/KO/RU/FR/ES。
+- **测试覆盖率**: 234 个测试全部通过 (Node.js + Go)。
+
+### v1.3.0 (2026-09-21)
+
+- Context overflow resilience, markdown ingestion, 3-step clear engine, 8-language i18n.
+
+### v1.2.1 (2026-09-19)
+
+- Fix Telegram pairing race condition, harden deleteMessage, enforce companion human fidelity.
+
+---
+
+## 9. License
 
 GNU General Public License v3.0 (GPL-3.0). 詳細については [LICENSE](LICENSE) を参照してください。

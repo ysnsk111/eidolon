@@ -1,5 +1,11 @@
 import fs from 'node:fs';
 import { normalizeMessages } from './normalize.js';
+import {
+  isDateHeader,
+  extractDateFromHeader,
+  isGroupAnnouncement,
+  isSystemNotice,
+} from './sanitize.js';
 
 export function parseTxtChat(filePath, options = {}) {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -29,6 +35,27 @@ export function parseTxtString(rawText, options = {}) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trimEnd();
     if (!line) continue;
+
+    // Standalone date or session separator header
+    if (isDateHeader(line) || /^[-=_]{3,}\s*\[?\d{4}[-/.]\d{1,2}[-/.]\d{1,2}.*[-=_]{3,}$/.test(line)) {
+      if (currentMsg) {
+        rawMessages.push(currentMsg);
+        currentMsg = null;
+      }
+      continue;
+    }
+
+    // Skip horizontal divider lines
+    if (/^[-=_*]{3,}$/.test(line.trim())) continue;
+
+    // Skip system notices or announcements as standalone lines
+    if (isSystemNotice(line) || isGroupAnnouncement(line)) {
+      if (currentMsg) {
+        rawMessages.push(currentMsg);
+        currentMsg = null;
+      }
+      continue;
+    }
 
     let match = line.match(p1) || line.match(p2) || line.match(p3);
 
