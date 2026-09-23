@@ -6,6 +6,8 @@
 import {
   isSystemNotice,
   isGroupAnnouncement,
+  isPollutedContent,
+  cleanMessageContent,
 } from '../ingestion/sanitize.js';
 
 export function extractLanguageFingerprint(messages, targetSpeaker) {
@@ -17,7 +19,15 @@ export function extractLanguageFingerprint(messages, targetSpeaker) {
     return getDefaultLanguageFingerprint();
   }
 
-  const texts = targetMsgs.map((m) => m.content.trim()).filter((t) => t.length > 0);
+  const texts = targetMsgs
+    .map((m) => (m.content || '').trim())
+    .map((t) => normalizeChineseSpaces(t))
+    .filter((t) => t.length > 0 && !isPollutedContent(t));
+
+  if (texts.length === 0) {
+    return getDefaultLanguageFingerprint();
+  }
+
   const totalCount = texts.length;
 
   // 1. Message Length Statistics (character count)
@@ -134,10 +144,24 @@ export function extractLanguageFingerprint(messages, targetSpeaker) {
     }
   }
 
-  // Sort top vocabulary, bigrams, trigrams
-  const topVocab = getTopK(vocabulary, 50);
-  const topBigrams = getTopK(bigrams, 30);
-  const topTrigrams = getTopK(trigrams, 20);
+  // Sort top vocabulary, bigrams, trigrams (filtered to avoid spaces and system/media artifacts)
+  const topVocab = Object.entries(vocabulary)
+    .filter(([tok]) => isValidVocabToken(tok) && !CHINESE_STOPWORDS.has(tok))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 50)
+    .map(([token, count]) => ({ token, count }));
+
+  const topBigrams = Object.entries(bigrams)
+    .filter(([tok]) => isValidVocabToken(tok))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 30)
+    .map(([token, count]) => ({ token, count }));
+
+  const topTrigrams = Object.entries(trigrams)
+    .filter(([tok]) => isValidVocabToken(tok))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([token, count]) => ({ token, count }));
 
   // 8. Catchphrases & Habitual Phrases Extraction
   const catchphrases = extractCatchphrases(texts, vocabulary, bigrams);
@@ -228,40 +252,70 @@ function getPercentile(sortedArray, p) {
 
 const isCjk = (str) => typeof str === 'string' && /[\u4e00-\u9fa5]/.test(str);
 
-function joinNGramTokens(tokA, tokB) {
-  if (isCjk(tokA) && isCjk(tokB)) {
-    return `${tokA}${tokB}`;
+function normalizeChineseSpaces(str) {
+  if (!str || typeof str !== 'string') return '';
+  let result = str;
+  while (/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/.test(result)) {
+    result = result.replace(/([\u4e00-\u9fa5])\s+([\u4e00-\u9fa5])/g, '$1$2');
   }
-  return `${tokA} ${tokB}`;
+  return result.trim();
+}
+
+function joinNGramTokens(tokA, tokB) {
+  const cleanA = normalizeChineseSpaces(tokA);
+  const cleanB = normalizeChineseSpaces(tokB);
+  if (isCjk(cleanA) && isCjk(cleanB)) {
+    return `${cleanA}${cleanB}`;
+  }
+  return `${cleanA} ${cleanB}`.trim();
 }
 
 function joinTriGramTokens(tokA, tokB, tokC) {
-  if (isCjk(tokA) && isCjk(tokB) && isCjk(tokC)) {
-    return `${tokA}${tokB}${tokC}`;
+  const cleanA = normalizeChineseSpaces(tokA);
+  const cleanB = normalizeChineseSpaces(tokB);
+  const cleanC = normalizeChineseSpaces(tokC);
+  if (isCjk(cleanA) && isCjk(cleanB) && isCjk(cleanC)) {
+    return `${cleanA}${cleanB}${cleanC}`;
   }
-  if (isCjk(tokA) && isCjk(tokB)) {
-    return `${tokA}${tokB} ${tokC}`;
+  if (isCjk(cleanA) && isCjk(cleanB)) {
+    return `${cleanA}${cleanB} ${cleanC}`.trim();
   }
-  if (isCjk(tokB) && isCjk(tokC)) {
-    return `${tokA} ${tokB}${tokC}`;
+  if (isCjk(cleanB) && isCjk(cleanC)) {
+    return `${cleanA} ${cleanB}${cleanC}`.trim();
   }
-  return `${tokA} ${tokB} ${tokC}`;
+  return `${cleanA} ${cleanB} ${cleanC}`.trim();
+}
+
+function isValidVocabToken(token) {
+  if (!token || typeof token !== 'string') return false;
+  const t = token.trim();
+  if (t.length === 0) return false;
+  // Strictly eliminate broken tokens with spaces between Chinese characters
+  if (/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(t)) return false;
+  // Eliminate media tokens
+  if (/^(?:图片|照片|语音|视频|表情包|动画表情|动画贴图|贴图|文件|位置|名片|image|photo|video|voice|audio|sticker|file)$/i.test(t)) return false;
+  if (/\[(?:图片|image|photo|表情包|动画表情|贴图|sticker|语音|视频)\]/i.test(t)) return false;
+  // Eliminate system words
+  if (/^(?:我是群聊|群聊|群公告|群规|群主|本群|系统|通知|消息|公告|撤回|打招呼)$/i.test(t)) return false;
+  if (/我是群聊/i.test(t)) return false;
+  return true;
 }
 
 function tokenize(text) {
   if (!text || typeof text !== 'string') return [];
-  // Use Intl.Segmenter for word-level segmentation without artificial spaces
+  const normalized = normalizeChineseSpaces(text);
   if (typeof Intl !== 'undefined' && Intl.Segmenter) {
     const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
     const emojiRegex = /[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0F}\u{200D}]+/u;
     const tokens = [];
-    for (const { segment, isWordLike } of segmenter.segment(text)) {
+    for (const { segment, isWordLike } of segmenter.segment(normalized)) {
       const trimmed = segment.trim();
       if (!trimmed) continue;
+      const cleanToken = normalizeChineseSpaces(trimmed);
       if (isWordLike) {
-        tokens.push(trimmed.toLowerCase());
-      } else if (emojiRegex.test(trimmed)) {
-        tokens.push(trimmed);
+        tokens.push(cleanToken.toLowerCase());
+      } else if (emojiRegex.test(cleanToken)) {
+        tokens.push(cleanToken);
       }
     }
     return tokens;
@@ -271,7 +325,7 @@ function tokenize(text) {
   const tokens = [];
   const regex = /[\u4e00-\u9fa5]|[a-zA-Z0-9']+|[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u{FE0F}\u{200D}]+/gu;
   let match;
-  while ((match = regex.exec(text)) !== null) {
+  while ((match = regex.exec(normalized)) !== null) {
     tokens.push(match[0].toLowerCase());
   }
   return tokens;
@@ -298,20 +352,29 @@ function extractCatchphrases(texts, vocabMap, biMap) {
   // Detect habitual expressions across sentences
   const phrases = [];
   const patterns = [
-    /好(呀|的|吧|呗|嘛|嘞|哇|滴)/i,
-    /知道啦|收到|好嘞/i,
-    /哈哈哈+|2333+|笑死|笑出声|太逗了|太搞笑了|hh+|hhh+/i,
-    /确实|对(呀|的|滴|啊)|没问题|行(呀|的|啊|嘞)|妥妥|ok/i,
+    /好(呀|的|吧|呗|嘛|嘞|哇|滴)|好吧|好的|收到|好嘞/i,
     /没事(儿|呀|啦)?|没关系|不客气(啦)?|懂了就好/i,
-    /早(呀|安|上好)?|晚安(安)?|明天见|先去忙啦|拜拜(啦)?|去睡啦/i,
+    /晚安(安)?|早(呀|安|上好)?|明天见|先去忙啦|拜拜(啦)?|去睡啦/i,
+    /确实|真(的|滴)|对(呀|的|滴|啊)|没问题|行(呀|的|啊|嘞)|妥妥|ok/i,
+    /哈哈哈+|哈哈|2333+|笑死|笑出声|太逗了|太搞笑了|hh+|hhh+/i,
     /救命|绝了|神了|我天|离谱|尊嘟假嘟|我的妈|真的假的|天哪|好家伙/i,
+    /可以(呀|啊|可以)|行行行|好好好|也是/i,
+    /怎么啦|怎么了|在哪呢|在干嘛|干嘛呢/i,
   ];
 
   for (const text of texts) {
     for (const pat of patterns) {
       const match = text.match(pat);
       if (match) {
-        phrases.push(match[0]);
+        const p = normalizeChineseSpaces(match[0]);
+        if (
+          isValidVocabToken(p) &&
+          !CHINESE_STOPWORDS.has(p) &&
+          !isPollutedContent(p) &&
+          !/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(p)
+        ) {
+          phrases.push(p);
+        }
       }
     }
   }
@@ -319,9 +382,18 @@ function extractCatchphrases(texts, vocabMap, biMap) {
   // Detect repeated whole short sentences (length 2-12)
   const sentenceCounts = {};
   for (const text of texts) {
-    const rawSentences = text.split(/[。！？!?；;\n]+/).map((s) => s.trim()).filter(Boolean);
+    const rawSentences = text.split(/[。！？!?；;\n]+/).map((s) => normalizeChineseSpaces(s.trim())).filter(Boolean);
     for (const s of rawSentences) {
-      if (s.length >= 2 && s.length <= 12 && !CHINESE_STOPWORDS.has(s) && !isSystemNotice(s) && !isGroupAnnouncement(s)) {
+      if (
+        s.length >= 2 &&
+        s.length <= 12 &&
+        !CHINESE_STOPWORDS.has(s) &&
+        !isSystemNotice(s) &&
+        !isGroupAnnouncement(s) &&
+        !isPollutedContent(s) &&
+        isValidVocabToken(s) &&
+        !/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(s)
+      ) {
         sentenceCounts[s] = (sentenceCounts[s] || 0) + 1;
       }
     }
@@ -337,24 +409,35 @@ function extractCatchphrases(texts, vocabMap, biMap) {
     phraseCounts[p] = (phraseCounts[p] || 0) + 1;
   }
 
-  const topPhrases = getTopK(phraseCounts, 10).map((item) => item.token);
+  const topPhrases = Object.entries(phraseCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([p]) => p);
 
   // Add top bigrams only if clean, frequent, and not stopwords
-  const topBi = getTopK(biMap, 20)
-    .filter((b) => {
-      if (b.count < 2) return false;
-      const tok = b.token.trim();
-      if (CHINESE_STOPWORDS.has(tok)) return false;
-      if (tok.includes('图片') || tok.includes('image')) return false;
-      if (isSystemNotice(tok) || isGroupAnnouncement(tok)) return false;
-      // Reject any bigram with artificial space between Chinese characters
-      if (/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(tok)) return false;
-      return tok.length >= 2 && tok.length <= 15;
+  const topBi = Object.entries(biMap)
+    .filter(([tok, count]) => {
+      if (count < 2) return false;
+      const b = normalizeChineseSpaces(tok.trim());
+      if (CHINESE_STOPWORDS.has(b)) return false;
+      if (!isValidVocabToken(b)) return false;
+      if (isSystemNotice(b) || isGroupAnnouncement(b) || isPollutedContent(b)) return false;
+      if (/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(b)) return false;
+      return b.length >= 2 && b.length <= 15;
     })
+    .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map((b) => b.token);
+    .map(([b]) => b);
 
-  return Array.from(new Set([...topPhrases, ...repeatedSentences, ...topBi]));
+  const merged = Array.from(new Set([...topPhrases, ...repeatedSentences, ...topBi]));
+  return merged.filter((item) =>
+    isValidVocabToken(item) &&
+    !CHINESE_STOPWORDS.has(item) &&
+    !/[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/.test(item) &&
+    !isPollutedContent(item) &&
+    item.length >= 2 &&
+    item.length <= 15
+  );
 }
 
 function extractOpenersAndClosers(messages, targetSpeaker) {
@@ -368,16 +451,14 @@ function extractOpenersAndClosers(messages, targetSpeaker) {
     const m = messages[i];
     const isTarget = targetSpeaker ? m.sender.toLowerCase() === targetSpeaker.toLowerCase() : m.isTarget;
 
-    const cleaned = (m.content || '')
-      .replace(/^#{1,6}\s+.*$/gm, '')
-      .replace(/\[(?:图片|image|photo|sticker|表情包|动画表情|语音|视频)\]/gi, '')
-      .trim();
+    const cleaned = cleanMessageContent(m.content || '');
 
     const isValidCandidate =
       cleaned.length >= 2 &&
       cleaned.length <= 30 &&
       !isSystemNotice(cleaned) &&
       !isGroupAnnouncement(cleaned) &&
+      !isPollutedContent(cleaned) &&
       !cleaned.startsWith('#');
 
     if (sessionStart && isTarget && isValidCandidate) {

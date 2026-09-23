@@ -1,4 +1,4 @@
-# EIDOLON v1.3.1
+# EIDOLON v1.4.0-preview.1
 
 <p align="center">
   <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.1-blue.svg" alt="Release: v1.3.1">
+  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.1-blue.svg" alt="Release: v1.4.0-preview.1">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
   <img src="https://img.shields.io/badge/SQLite-Native%20ACID-003B57.svg" alt="SQLite: Native ACID">
   <img src="https://img.shields.io/badge/L4%20State-BSM%20Engine-ff69b4.svg" alt="L4 State: BSM Engine">
-  <img src="https://img.shields.io/badge/Tests-234%20Passed-brightgreen.svg" alt="Tests: 234 Passed">
+  <img src="https://img.shields.io/badge/Tests-246%20Passed-brightgreen.svg" alt="Tests: 246 Passed">
 </p>
 
 ---
@@ -38,7 +38,8 @@
 - [5. Engineering & Security Hardening](#5-engineering--security-hardening)
 - [6. Quick Start & Onboarding Wizard](#6-quick-start--onboarding-wizard)
 - [7. CLI Command Reference](#7-cli-command-reference)
-- [8. License](#8-license)
+- [8. Changelog](#8-changelog)
+- [9. License](#9-license)
 
 ---
 
@@ -201,10 +202,43 @@ npm run build:server && eidolon service start
 | `eidolon status` | Display full runtime status across all subsystems |
 | `eidolon clear [--mode all|chat-memory]` | 3-step interactive clearance: complete purge (all-clear) or chats & memories only (preserves personas) |
 
-[↑ Back to Top](#eidolon-v121)
+[↑ Back to Top](#eidolon-v140-preview1)
 
 ---
 
-## 8. License
+## 8. Changelog
+
+### v1.4.0-preview.1 (2026-09-23)
+
+**🚀 Distillation Engine & Human Simulation Runtime Overhaul**
+
+- **Zero System Message Leakage**:
+  - Overhauled regex matching in `cli/ingestion/sanitize.js` to detect malformed or unclosed group chat announcements (e.g. `我是群聊“...”?`) and system notices.
+  - Added and exported `isPollutedContent(text)` and `cleanMessageContent(text)` across ingestion and distillation pipelines.
+  - Fixed Markdown ingestion parser (`cli/ingestion/md.js`) speaker attribution: date headers (`### YYYY-MM-DD`) and system announcements are cleanly separated and discarded before speaker attribution, preventing system metadata from being concatenated to previous dialogue turns or parsed as dialogue content.
+  - Strict speaker normalization in `cli/ingestion/normalize.js` isolating target speaker from counterpart speaker and discarding non-dialogue lines.
+- **Distillation Engine & Persona Fidelity Overhaul**:
+  - Completely overhauled `buildFewShotBlock` in `cli/distillation/persona.js`: verified prompt is from counterpart speaker and response is from target speaker, strictly preventing role reversal and eliminating repetitive message leaks.
+  - CJK Tokenization & Space Normalization (`cli/distillation/language.js`): implemented `normalizeChineseSpaces` to remove artificial spaces between Chinese characters (`图 片` -> `图片`, `好 吧` -> `好吧`), and sanitized catchphrase extraction so colloquial expressions are authentic and clean (`好吧`, `没事`, `真的`, `晚安`, `行啊`, `也是`, `确实`, `好的`, `可以啊`).
+  - Contextual Emoji Modeling (`cli/distillation/assets.js`): probability distribution $P(\text{emoji} \mid \text{context}, \text{emotion})$ with actual corpus frequencies and context sentiment bindings, eliminating unnatural emoji mismatches.
+- **Go Server Runtime & Human Simulation Engine**:
+  - Completely eradicated robotic fallback canned phrases (`在呢，怎么啦~`, `在忙呢，稍等下哦`) from `server/internal/runtime/runtime.go`.
+  - Replaced with dynamic, state-aware, time-of-day contextual persona fallbacks for casual calls (`oi`, name calls, etc.) based on relationship warmth and time.
+  - Leaked speaker label & candidate format stripping (`cleanSinglePassOutput`): cleans any lingering speaker tags (`Yawen:`, `Target:`, `Candidate:`, etc.).
+  - Overhauled fallback persona in `server/internal/persona/persona.go` and added robust loading for top-level and nested linguistic fingerprints, openers, and catchphrases.
+- **Testing & Quality Assurance**:
+  - Expanded test suite to 246 Node.js tests across 52 suites passing with 0 failures (`tests/distillation/engine_overhaul_verification.test.js`).
+  - 100% Go unit tests passing across all packages.
+
+### v1.3.1 (2026-09-22)
+
+- Burst debounce buffer (3.5s) in Telegram runtime.
+- Intelligent semantic quote reply in multi-question burst scenarios.
+- Single-pass direct generation eliminating redundant 3-candidate rounds.
+- Latency model calibration restoring realistic human IM pacing (2-8 seconds).
+
+---
+
+## 9. License
 
 GNU General Public License v3.0 (GPL-3.0). See [LICENSE](LICENSE) for details.

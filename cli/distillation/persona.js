@@ -4,7 +4,12 @@
  * Contains 1:1 complete, exhaustive agent system prompts.
  */
 
-import { isSystemNotice, isGroupAnnouncement } from '../ingestion/sanitize.js';
+import {
+  isSystemNotice,
+  isGroupAnnouncement,
+  isPollutedContent,
+  isSystemSender,
+} from '../ingestion/sanitize.js';
 
 export function constructPersonaPackage({
   personaId,
@@ -35,12 +40,13 @@ export function constructPersonaPackage({
   const fewShotBlock = buildFewShotBlock(distillationSet, name, counterpartSpeaker);
 
   // 1. Generator Agent System Prompt
-  const generatorPrompt = `You are ${name}. You are NOT an AI assistant, and you MUST NEVER break character, apologize as an AI, or adopt generic corporate conversational tone.
+  const generatorPrompt = `You are ${name}, chatting on WeChat/Telegram. Reply in 1-2 short colloquial phrases (10-25 characters), natural, warm, and authentic. No assistant boilerplate.
+You are NOT an AI assistant, and you MUST NEVER break character, apologize as an AI, or adopt generic corporate conversational tone.
 You are embodying a real, consistent persona distilled from authentic communication records.
 【核心身份要求】
 你是 ${name} 本人，正在通过即时通讯（微信/Telegram）与好友日常聊天。
 严禁出现“作为AI”、“语言模型”、“有什么可以帮您”等任何助手口癖。直接以生活化口吻回复，句子简短自然。
-回复必须极其精炼，如同真人微信打字，通常只有1~2句短句或短语碎句，绝不长篇大论。
+回复必须极其精炼，如同真人微信打字，通常只有1~2句短句或短语碎句（10-25字），绝不长篇大论。
 ${fewShotBlock}
 [CORE LINGUISTIC FINGERPRINT]
 - Message Length Tendency: Your typical message length is around ${medianLength} characters (median). Keep short turns brief, rarely exceeding ${p90Length} characters unless explaining complex matters.
@@ -152,7 +158,7 @@ Output strictly JSON:
 
   const persona = {
     id: personaId,
-    version: '1.1.0',
+    version: '1.2.0',
     name,
     created_at: new Date().toISOString(),
     target_speaker: targetSpeaker,
@@ -205,10 +211,10 @@ Output strictly JSON:
   return persona;
 }
 
-function formatContextualEmojiBindings(assetsModel) {
+export function formatContextualEmojiBindings(assetsModel) {
   const emojis = assetsModel?.emojis || [];
   if (emojis.length === 0) {
-    return `- Emoji Habit: Rarely or never uses emojis in casual text. Rely on authentic punctuation, particles, and colloquial phrasing instead of emojis.`;
+    return `- Emoji Habit: Rarely or never uses emojis in casual text. Rely on authentic punctuation, particles, and colloquial phrasing instead of emojis. Strictly omit emojis rather than use synthetic placeholders.`;
   }
 
   const contextMap = {};
@@ -226,7 +232,9 @@ function formatContextualEmojiBindings(assetsModel) {
     joking: 'When joking or teasing',
     pleading_cute: 'When asking, acting cute or pleading',
     tired_sleep: 'When tired or saying goodnight',
+    tired_night: 'When tired or saying goodnight',
     teasing_banter: 'When teasing or banter',
+    teasing: 'When teasing or banter',
     affection: 'When expressing warmth or affection',
     agreement: 'When agreeing or acknowledging',
     celebration: 'When celebrating or encouraging',
@@ -238,9 +246,13 @@ function formatContextualEmojiBindings(assetsModel) {
 
   const lines = ['- Emoji Habits & Contextual Bindings:'];
   let hasSpecificContext = false;
+  const seenLabels = new Set();
+
   for (const [ctx, label] of Object.entries(ctxLabels)) {
+    if (seenLabels.has(label)) continue;
     if (contextMap[ctx] && contextMap[ctx].length > 0) {
       hasSpecificContext = true;
+      seenLabels.add(label);
       lines.push(`  * ${label}: ${contextMap[ctx].slice(0, 3).join(', ')}`);
     }
   }
@@ -254,88 +266,125 @@ function formatContextualEmojiBindings(assetsModel) {
   return lines.join('\n');
 }
 
-function buildFewShotBlock(distillationSet, name, counterpartSpeaker) {
+export function buildFewShotBlock(distillationSet, name, counterpartSpeaker) {
   if (!Array.isArray(distillationSet) || distillationSet.length === 0) {
     return '';
   }
 
+  const targetName = name || 'TargetPersona';
   const defaultCounterpart = counterpartSpeaker || 'User';
 
-  function isCleanTurnContent(text) {
+  function isValidTurnLength(text) {
     if (!text || typeof text !== 'string') return false;
     const trimmed = text.trim();
-    if (trimmed.length === 0 || trimmed.length > 50) return false;
-    if (trimmed.startsWith('#') || trimmed.includes('###')) return false;
-    if (/\[(?:图片|image|photo|sticker|表情包|动画表情|语音|视频)\]/i.test(trimmed)) return false;
-    if (isGroupAnnouncement(trimmed) || isSystemNotice(trimmed)) return false;
-    return true;
+    return trimmed.length >= 2 && trimmed.length <= 35;
   }
 
-  function categorizePhase(turnText, contextText) {
-    const combined = `${contextText} ${turnText}`;
-    if (/(早|晚安|在吗|哈喽|嗨|hi|hello)/i.test(combined)) return 'opener_closer';
-    if (/(好呀|好的|收到|行呀|没问题|确实|哈哈|笨蛋|逗)/i.test(combined)) return 'banter_agreement';
-    if (/(累|困|难过|抱抱|救命|呜呜|🥺|😴)/i.test(combined)) return 'emotional';
-    return 'casual';
+  function containsSpecificPollution(text) {
+    if (!text || typeof text !== 'string') return true;
+    if (/我是群聊/i.test(text)) return true;
+    if (/(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(text)) return true;
+    if (/(?:^|\n)#{1,6}\s+/i.test(text) || /###\s*\[?\d{4}/i.test(text)) return true;
+    if (/\[(?:图片|image|photo|表情包|动画表情|动画贴图|贴图|sticker|语音|视频)\]/i.test(text)) return true;
+    return false;
   }
 
-  // Filter valid turns
+  function categorizePhase(targetText, counterpartText) {
+    const combined = `${counterpartText} ${targetText}`;
+    if (/(?:哈哈|233|逗|笑死|太搞笑了|笨蛋|才不|略略|怎么可能|哪有)/i.test(combined)) return 'banter';
+    if (/(?:好(呀|的|吧|嘞)|收到|确实|对(呀|的)|行(呀|啊)|没问题|妥妥)/i.test(combined)) return 'agreement';
+    if (/(?:早(呀|安)?|晚安|在吗|在嘛|哈喽|嗨|hi|hello|明天见|拜拜)/i.test(combined)) return 'greeting';
+    if (/(?:爱|喜欢|想你|抱抱|亲亲|心疼|辛苦啦|暖心|🥰|❤️)/i.test(combined)) return 'affection';
+    return 'casual_sharing';
+  }
+
   const cleanTurns = [];
-  for (const t of distillationSet) {
-    if (!t.context || t.context.length === 0 || !t.target_message) continue;
-    const targetMsg = t.target_message.trim();
-    if (!isCleanTurnContent(targetMsg)) continue;
 
-    // Coalesce burst messages from the counterpart immediately preceding target response
+  for (const t of distillationSet) {
+    if (!t.context || !Array.isArray(t.context) || t.context.length === 0 || !t.target_message) {
+      continue;
+    }
+
+    // 1. Target Response: strictly belong to targetSpeaker (ZERO ROLE REVERSAL)
+    if (t.target_speaker && t.target_speaker.toLowerCase() !== targetName.toLowerCase()) {
+      continue;
+    }
+
+    const rawTarget = typeof t.target_message === 'string' ? t.target_message.trim() : '';
+    if (!isValidTurnLength(rawTarget)) continue;
+    if (containsSpecificPollution(rawTarget) || isPollutedContent(rawTarget)) continue;
+
+    // 2. Counterpart Prompt: strictly belong to counterpartSpeaker
+    // Collect the immediate burst messages from counterpart before target response
     const precedingContext = [];
     for (let i = t.context.length - 1; i >= 0; i--) {
       const msg = t.context[i];
       const sender = msg.sender || defaultCounterpart;
-      if (precedingContext.length === 0 || sender === precedingContext[0].sender) {
+
+      // Reject if target speaker appears in counterpart prompt (ZERO ROLE REVERSAL)
+      if (sender.toLowerCase() === targetName.toLowerCase()) {
+        break;
+      }
+
+      if (precedingContext.length === 0 || sender.toLowerCase() === precedingContext[0].sender.toLowerCase()) {
         precedingContext.unshift(msg);
       } else {
         break;
       }
     }
 
+    if (precedingContext.length === 0) continue;
+
     const counterpartSender = precedingContext[0]?.sender || defaultCounterpart;
+    // Counterpart sender must NOT be targetSpeaker or system sender
+    if (counterpartSender.toLowerCase() === targetName.toLowerCase()) continue;
+    if (isSystemSender(counterpartSender)) continue;
+
+    // Extract and validate counterpart messages
     const counterpartTexts = precedingContext
       .map((m) => (m.content || '').trim())
-      .filter((c) => isCleanTurnContent(c));
+      .filter((c) => !containsSpecificPollution(c) && !isPollutedContent(c));
 
     if (counterpartTexts.length === 0) continue;
 
     const joinedCounterpart = counterpartTexts.join('\n');
-    if (joinedCounterpart.length > 60) continue;
+    if (!isValidTurnLength(joinedCounterpart)) continue;
+    if (containsSpecificPollution(joinedCounterpart) || isPollutedContent(joinedCounterpart)) continue;
 
-    const phase = categorizePhase(targetMsg, joinedCounterpart);
+    const phase = categorizePhase(rawTarget, joinedCounterpart);
     cleanTurns.push({
       counterpartSender,
       counterpartText: joinedCounterpart,
-      targetText: targetMsg,
+      targetText: rawTarget,
       phase,
     });
   }
 
   if (cleanTurns.length === 0) return '';
 
-  // Select up to 6 turns ensuring phase diversity
-  const selected = [];
+  // Select up to 6 high-quality turns representing distinct emotional phases:
+  // (banter, agreement, greeting, affection, casual sharing)
   const phaseBuckets = {
-    opener_closer: [],
-    banter_agreement: [],
-    emotional: [],
-    casual: [],
+    banter: [],
+    agreement: [],
+    greeting: [],
+    affection: [],
+    casual_sharing: [],
   };
 
   for (const item of cleanTurns) {
-    phaseBuckets[item.phase].push(item);
+    if (phaseBuckets[item.phase]) {
+      phaseBuckets[item.phase].push(item);
+    } else {
+      phaseBuckets.casual_sharing.push(item);
+    }
   }
 
-  // Draw from diverse phases
-  const desiredOrder = ['opener_closer', 'banter_agreement', 'emotional', 'casual', 'banter_agreement', 'opener_closer'];
-  for (const ph of desiredOrder) {
-    if (phaseBuckets[ph].length > 0) {
+  const selected = [];
+  const desiredPhases = ['greeting', 'banter', 'agreement', 'affection', 'casual_sharing', 'banter'];
+
+  for (const ph of desiredPhases) {
+    if (phaseBuckets[ph] && phaseBuckets[ph].length > 0) {
       selected.push(phaseBuckets[ph].shift());
       if (selected.length >= 6) break;
     }
@@ -352,8 +401,8 @@ function buildFewShotBlock(distillationSet, name, counterpartSpeaker) {
   }
 
   const examples = selected.map(
-    (s) => `${s.counterpartSender}: ${s.counterpartText}\n${name}: ${s.targetText}`
+    (s) => `${s.counterpartSender}: ${s.counterpartText}\n${targetName}: ${s.targetText}`
   );
 
-  return `\n\n[AUTHENTIC DIALOGUE SAMPLES (FEW-SHOT TURNS)]\nDirectly replicate ${name}'s typical brevity, tone, and spoken syntax:\n${examples.join('\n---\n')}\n`;
+  return `\n\n[AUTHENTIC DIALOGUE SAMPLES (FEW-SHOT TURNS)]\nDirectly replicate ${targetName}'s typical brevity, tone, and spoken syntax:\n${examples.join('\n---\n')}\n`;
 }

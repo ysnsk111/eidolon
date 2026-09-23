@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-preview.1] - 2026-09-23
+
+### Fixed & Overhauled
+- **Ingestion Sanitizer & System Message Leak Elimination**:
+  - Overhauled regex matching in `cli/ingestion/sanitize.js` to detect malformed or unclosed group chat announcements (e.g. `我是群聊“...”?` with trailing punctuation or mismatched quotes) and system notices.
+  - Added and exported `isPollutedContent(text)` and `cleanMessageContent(text)` across ingestion and distillation pipelines.
+  - Fixed Markdown ingestion parser (`cli/ingestion/md.js`) speaker attribution: date headers (`### YYYY-MM-DD`) and system announcements are cleanly separated and discarded before speaker attribution, preventing system metadata from being concatenated to previous dialogue turns or parsed as dialogue content.
+  - Strict speaker normalization in `cli/ingestion/normalize.js` isolating target speaker from counterpart speaker and discarding non-dialogue lines.
+- **Distillation Engine & Persona Fidelity Overhaul**:
+  - Completely overhauled `buildFewShotBlock` in `cli/distillation/persona.js`: verified prompt is from counterpart speaker and response is from target speaker, strictly preventing role reversal and eliminating repetitive message leaks.
+  - CJK Tokenization & Space Normalization (`cli/distillation/language.js`): implemented `normalizeChineseSpaces` to remove artificial spaces between Chinese characters (`图 片` -> `图片`, `好 吧` -> `好吧`), and sanitized catchphrase extraction so colloquial expressions are authentic and clean (`好吧`, `没事`, `真的`, `晚安`, `行啊`, `也是`, `确实`, `好的`, `可以啊`).
+  - Contextual Emoji Modeling (`cli/distillation/assets.js`): probability distribution $P(\text{emoji} \mid \text{context}, \text{emotion})$ with actual corpus frequencies and context sentiment bindings, eliminating unnatural emoji mismatches.
+- **Go Server Runtime & Human Simulation Engine**:
+  - Completely eradicated robotic fallback canned phrases (`在呢，怎么啦~`, `在忙呢，稍等下哦`) from `server/internal/runtime/runtime.go`.
+  - Replaced with dynamic, state-aware, time-of-day contextual persona fallbacks for casual calls (`oi`, name calls, etc.) based on relationship warmth and time.
+  - Leaked speaker label & candidate format stripping (`cleanSinglePassOutput`): cleans any lingering speaker tags (`Yawen:`, `Target:`, `Candidate:`, etc.).
+  - Overhauled fallback persona in `server/internal/persona/persona.go` and added robust loading for top-level and nested linguistic fingerprints, openers, and catchphrases.
+- **Test Infrastructure**:
+  - Expanded test suite to 246 Node.js tests across 52 suites passing with 0 failures (`tests/distillation/engine_overhaul_verification.test.js`).
+  - 100% Go unit tests passing across all packages.
+
+## [1.3.1] - 2026-09-22
+
+### Added
+- **Burst Debounce Buffer (3.5s)**: Multi-message burst buffer in Telegram runtime, aggregating rapid consecutive messages into a single conversational turn.
+- **Intelligent Semantic Quote Reply**: Replaced unconditional quote reply with smart targeted quoting only in multi-question burst scenarios.
+- **Single-Pass Direct Generation**: Streamlined generation pipeline to single-pass direct synthesis, eliminating redundant 3-candidate Critic LLM rounds.
+- **Latency Model Calibration**: Fixed minute-quantized timestamps yielding 60s latency spikes, restoring realistic human IM pacing (2-8 seconds).
+
 ## [1.2.1] - 2026-09-20
 
 ### Fixed

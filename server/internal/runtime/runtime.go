@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"eidolon/server/internal/memory"
@@ -174,7 +175,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		generatedText = cleanSinglePassOutput(rawGen, activeP.Persona.TargetSpeaker)
 	}
 
-	fallbackResponse := getPersonaFallback(activeP, userContent)
+	fallbackResponse := getPersonaFallback(activeP, userContent, relState)
 	if generatedText == "" {
 		generatedText = fallbackResponse
 	}
@@ -334,7 +335,7 @@ func (o *Orchestrator) runCriticPipeline(criticPrompt, candA, candB, candC strin
 
 // SanitizeOutput is a hard safety guardrail that removes genuine AI identity artifacts.
 // It prunes overbroad keywords so that innocent colloquial sentences are never stripped,
-// and ensures 0% fallback to the repetitive "在呢，怎么啦~" boilerplate.
+// and ensures 0% fallback to repetitive mechanical boilerplates.
 func SanitizeOutput(text, personaName string, fallbackVoice ...string) string {
 	if strings.TrimSpace(text) == "" {
 		if len(fallbackVoice) > 0 && strings.TrimSpace(fallbackVoice[0]) != "" {
@@ -343,7 +344,7 @@ func SanitizeOutput(text, personaName string, fallbackVoice ...string) string {
 		if personaName != "" {
 			return "刚才在忙呢，怎么啦？"
 		}
-		return "在忙呢，稍等下哦"
+		return "哎，怎么啦？"
 	}
 
 	aiMarkers := []string{
@@ -354,13 +355,16 @@ func SanitizeOutput(text, personaName string, fallbackVoice ...string) string {
 		"作为人工智能",
 		"作为一个语言模型",
 		"作为一个大型语言模型",
+		"作为大型语言模型",
+		"作为一个大语言模型",
+		"作为大语言模型",
+		"作为语言模型",
 		"作为虚拟助手",
 		"作为ai助手",
 		"我是ai",
 		"我是一个ai",
 		"我是人工智能",
 		"我是由openai训练",
-		"语言模型",
 		"as an ai",
 		"i'm an ai",
 		"i am an ai",
@@ -398,18 +402,19 @@ func SanitizeOutput(text, personaName string, fallbackVoice ...string) string {
 		cleaned = re.ReplaceAllString(cleaned, "")
 	}
 	cleaned = strings.TrimSpace(cleaned)
-	if len([]rune(cleaned)) >= 3 {
+	cleanContent := strings.Trim(cleaned, " 　\t\r\n，。！？!?~～:：;；、.")
+	if len([]rune(cleanContent)) > 0 {
 		return cleaned
 	}
 
-	// Fallback to authentic colloquial companion response if message was AI boilerplate (0% "在呢，怎么啦~")
+	// Fallback to authentic colloquial companion response if message was AI boilerplate
 	if len(fallbackVoice) > 0 && strings.TrimSpace(fallbackVoice[0]) != "" {
 		return strings.TrimSpace(fallbackVoice[0])
 	}
 	if personaName != "" {
 		return "刚才在忙呢，怎么啦？"
 	}
-	return "在忙呢，稍等下哦"
+	return "哎，怎么啦？"
 }
 
 func sanitizeOutput(text, personaName string, fallbackVoice ...string) string {
@@ -439,75 +444,312 @@ func isAIMarkerMatch(textLower, marker string) bool {
 	return strings.Contains(textLower, marker)
 }
 
-func getPersonaFallback(activeP *persona.LoadedPersona, userContent string) string {
+func isGroupAnnouncementOrSystemArtifact(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+
+	// Group announcements and bot greetings
+	if strings.HasPrefix(trimmed, "我是群聊") || strings.HasPrefix(trimmed, "群公告") ||
+		strings.HasPrefix(trimmed, "群规") || strings.HasPrefix(trimmed, "群主提醒") ||
+		strings.HasPrefix(trimmed, "系统通知") || strings.HasPrefix(trimmed, "系统消息") ||
+		strings.HasPrefix(trimmed, "欢迎加入群聊") || strings.HasPrefix(trimmed, "欢迎加入") ||
+		strings.HasPrefix(trimmed, "本群须知") || strings.HasPrefix(trimmed, "公告：") || strings.HasPrefix(trimmed, "公告:") {
+		return true
+	}
+	if strings.Contains(trimmed, "我是群聊“") || strings.Contains(trimmed, "我是群聊\"") || strings.Contains(trimmed, "我是群聊") {
+		return true
+	}
+
+	// System notices & service events
+	if strings.Contains(trimmed, "撤回了一条消息") || strings.Contains(trimmed, "你撤回了一条消息") ||
+		strings.Contains(trimmed, "拍了拍") || strings.Contains(trimmed, "移出了群聊") ||
+		strings.Contains(trimmed, "加入了群聊") || strings.Contains(trimmed, "开启了朋友验证") ||
+		strings.Contains(trimmed, "现在可以开始聊天了") {
+		return true
+	}
+	if strings.Contains(lower, "joined the group") || strings.Contains(lower, "left the group") || strings.Contains(lower, "pinned a message") {
+		return true
+	}
+
+	// Media-only lines
+	if trimmed == "[图片]" || trimmed == "[image]" || trimmed == "[表情包]" || trimmed == "[动画表情]" ||
+		trimmed == "[语音]" || trimmed == "[视频]" || trimmed == "[文件]" {
+		return true
+	}
+
+	// Legacy repetitive boilerplates
+	if strings.Contains(trimmed, "在呢，怎么啦~") || strings.Contains(trimmed, "在忙呢，稍等下哦") {
+		return true
+	}
+
+	return false
+}
+
+var fallbackCounter uint64
+
+func pickVariant(candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	idx := atomic.AddUint64(&fallbackCounter, 1) % uint64(len(candidates))
+	return candidates[idx]
+}
+
+func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relState ...*relationship.FullSessionState) string {
+	trimmed := strings.TrimSpace(userContent)
+	userLower := strings.ToLower(trimmed)
+	cleanPunct := strings.Trim(userLower, " ~!@#$%^&*()_+=-`{}[]|\\:;\"'<>,.?/，。！？~～、")
+
+	var state *relationship.FullSessionState
+	if len(relState) > 0 {
+		state = relState[0]
+	}
+
+	isIrritated := false
+	isWarm := false
+	isDistant := false
+	if state != nil {
+		if state.Relationship.Phase == "ANNOYED" || state.Relationship.Phase == "CONFLICT" || state.Relationship.Phase == "COLD" || state.Relationship.Irritation > 0.6 {
+			isIrritated = true
+		} else if state.Relationship.Phase == "WARM" || state.Relationship.Warmth > 0.7 {
+			isWarm = true
+		} else if state.Relationship.Phase == "DISTANT" {
+			isDistant = true
+		}
+	}
+
+	hour := time.Now().Hour()
+	isLateNight := (hour >= 23 || hour < 6)
+	isMorning := (hour >= 6 && hour < 11)
+
+	// Check if user is casually calling or greeting the persona ("oi", "哈喽", "王雅雯", "雅雯", etc.)
+	isCallingByNameOrGreeting := false
+
+	casualGreetings := []string{"oi", "oii", "oiii", "oy", "yo", "哈喽", "哈罗", "hello", "hi", "hey", "嗨", "嗨喽", "嗨害嗨", "喂"}
+	for _, g := range casualGreetings {
+		if cleanPunct == g || (strings.HasPrefix(cleanPunct, g) && len([]rune(cleanPunct)) <= len([]rune(g))+2) {
+			isCallingByNameOrGreeting = true
+			break
+		}
+	}
+
+	nameTriggers := []string{"王雅雯", "雅雯", "小雅", "yawen", "ms.yawen"}
 	if activeP != nil {
-		// 1. Try to use distilled openers if available
-		if fp, ok := activeP.Persona.LinguisticFingerprint["openers"]; ok {
-			if openers, ok := fp.([]string); ok && len(openers) > 0 && strings.TrimSpace(openers[0]) != "" {
-				return strings.TrimSpace(openers[0])
-			}
-			if openers, ok := fp.([]interface{}); ok && len(openers) > 0 {
-				if s, ok := openers[0].(string); ok && strings.TrimSpace(s) != "" {
-					return strings.TrimSpace(s)
-				}
-			}
+		if activeP.Persona.TargetSpeaker != "" {
+			nameTriggers = append(nameTriggers, strings.ToLower(activeP.Persona.TargetSpeaker))
 		}
+		if activeP.Persona.Name != "" {
+			nameTriggers = append(nameTriggers, strings.ToLower(activeP.Persona.Name))
+		}
+	}
 
-		// 2. Try catchphrases
-		if vocab, ok := activeP.Persona.LinguisticFingerprint["vocabulary"].(map[string]interface{}); ok {
-			if cp, ok := vocab["catchphrases"]; ok {
-				if phrases, ok := cp.([]string); ok && len(phrases) > 0 && strings.TrimSpace(phrases[0]) != "" {
-					return strings.TrimSpace(phrases[0]) + "，刚才走开了一下"
-				}
-				if phrases, ok := cp.([]interface{}); ok && len(phrases) > 0 {
-					if s, ok := phrases[0].(string); ok && strings.TrimSpace(s) != "" {
-						return strings.TrimSpace(s) + "，刚才走开了一下"
-					}
-				}
+	if !isCallingByNameOrGreeting {
+		for _, name := range nameTriggers {
+			if cleanPunct == name || strings.HasPrefix(cleanPunct, name) || strings.Contains(trimmed, name) {
+				isCallingByNameOrGreeting = true
+				break
 			}
 		}
 	}
 
-	// 3. Contextual conversational response based on user input
-	userLower := strings.ToLower(userContent)
+	if isCallingByNameOrGreeting {
+		var candidates []string
+		if isIrritated {
+			candidates = []string{
+				"咋了",
+				"干嘛",
+				"怎么了？",
+				"有事说事~",
+				"在呢，什么事？",
+			}
+		} else if isDistant {
+			candidates = []string{
+				"在的，怎么啦？",
+				"嗯？找我有事吗",
+				"在呢，怎么啦？",
+			}
+		} else if isWarm {
+			if isLateNight {
+				candidates = []string{
+					"还没睡呀？怎么啦~",
+					"在呀在呀，大半夜怎么突然叫我~",
+					"还没睡呢？想我啦？",
+					"在呢，怎么啦宝宝~",
+				}
+			} else if isMorning {
+				candidates = []string{
+					"早呀~ 怎么突然叫我~",
+					"在呀在呀，早安！怎么啦？",
+					"早啊，找我嘛~",
+					"在呀，今天起挺早呢，怎么啦？",
+				}
+			} else {
+				candidates = []string{
+					"在呀，怎么突然叫我~",
+					"哎！怎么啦呀~",
+					"在呢在呢，想我啦？",
+					"哎，怎么啦？",
+					"在呀在呀，什么事呀~",
+				}
+			}
+		} else {
+			// Normal / Balanced living companion tone
+			if isLateNight {
+				candidates = []string{
+					"还没睡呀？怎么啦~",
+					"在呢，这么晚找我，咋啦？",
+					"还没睡呢？怎么啦",
+					"在呀，怎么突然叫我~",
+				}
+			} else if isMorning {
+				candidates = []string{
+					"早呀~ 怎么啦？",
+					"在呢早呀，怎么突然叫我~",
+					"早啊，刚看手机，咋啦？",
+					"在呀，有什么事嘛~",
+				}
+			} else {
+				candidates = []string{
+					"哎，怎么啦？",
+					"在呀，怎么突然叫我~",
+					"咋啦？",
+					"在呢，有什么事呀",
+					"在的呀，怎么啦？",
+					"怎么啦怎么啦~",
+				}
+			}
+		}
+		return pickVariant(candidates)
+	}
+
+	if cleanPunct == "在吗" || cleanPunct == "在嘛" || cleanPunct == "在不在" || cleanPunct == "在不" || cleanPunct == "在呢吗" {
+		if isIrritated {
+			return pickVariant([]string{"在呢，说吧", "在，怎么了", "有事吗？"})
+		} else if isWarm {
+			return pickVariant([]string{"在呀在呀！怎么啦？", "在呢~ 随时都在", "在呀在呀，怎么啦~"})
+		}
+		return pickVariant([]string{"在呀在呀，怎么啦？", "在的呢，怎么啦？", "在呀，有什么事呀", "在的在的，怎么啦？"})
+	}
+
+	if cleanPunct == "123" || cleanPunct == "1" || cleanPunct == "打卡" || cleanPunct == "戳戳" || strings.Contains(cleanPunct, "戳一戳") {
+		return pickVariant([]string{
+			"发这个干嘛呀哈哈",
+			"？怎么突然戳我",
+			"摸鱼呢？",
+			"咋啦，发暗号呢？",
+			"发123干嘛呀哈哈",
+			"突然戳我一下干嘛~",
+		})
+	}
+
 	if strings.Contains(userLower, "早") {
-		return "早呀，刚看到消息~"
-	}
-	if strings.Contains(userLower, "晚安") || strings.Contains(userLower, "睡") {
-		return "好梦呀，明天聊！"
-	}
-	if strings.Contains(userLower, "哈哈") {
-		return "哈哈哈刚才在忙呢"
-	}
-	if strings.Contains(userLower, "在吗") || strings.Contains(userLower, "在嘛") {
-		return "在的在的，刚才在忙"
-	}
-	if strings.Contains(userLower, "？") || strings.Contains(userLower, "?") {
-		return "刚刚在忙呢，怎么啦？"
+		if activeP != nil {
+			for _, op := range activeP.GetOpeners() {
+				if strings.Contains(op, "早") && !isGroupAnnouncementOrSystemArtifact(op) {
+					return op
+				}
+			}
+		}
+		return pickVariant([]string{
+			"早呀，刚看到消息~",
+			"早啊！今天起挺早呀",
+			"早呀早呀，昨晚睡得好吗",
+			"早安~ 今天有什么安排嘛",
+		})
 	}
 
-	return "刚才走开了一下，怎么啦？"
+	if strings.Contains(userLower, "晚安") || strings.Contains(userLower, "睡了") || strings.Contains(userLower, "好梦") || strings.Contains(userLower, "去睡") {
+		return pickVariant([]string{
+			"好梦呀，明天聊！",
+			"晚安晚安，早点休息~",
+			"去睡吧，明天见！",
+			"好梦哦，盖好被子~",
+		})
+	}
+
+	if strings.Contains(userLower, "哈哈") || strings.Contains(userLower, "233") || strings.Contains(userLower, "笑死") {
+		return pickVariant([]string{
+			"哈哈哈笑死我了",
+			"哈哈哈哈太逗了",
+			"哈哈你在笑什么呀",
+			"笑得这么开心呀哈哈",
+		})
+	}
+
+	if strings.Contains(userLower, "？") || strings.Contains(userLower, "?") || strings.Contains(userLower, "人呢") || strings.Contains(userLower, "干嘛呢") {
+		return pickVariant([]string{
+			"怎么啦？遇到什么事啦",
+			"嗯？咋啦",
+			"刚才没看手机，怎么啦？",
+			"在的在的，怎么啦？",
+		})
+	}
+
+	// General contextual fallback from distilled persona
+	if activeP != nil {
+		var cleanOpeners []string
+		for _, op := range activeP.GetOpeners() {
+			if !isGroupAnnouncementOrSystemArtifact(op) && len([]rune(op)) >= 2 && len([]rune(op)) <= 80 {
+				cleanOpeners = append(cleanOpeners, op)
+			}
+		}
+		if len(cleanOpeners) > 0 {
+			return pickVariant(cleanOpeners)
+		}
+
+		var cleanCatchphrases []string
+		for _, cp := range activeP.GetCatchphrases() {
+			if !isGroupAnnouncementOrSystemArtifact(cp) && len([]rune(cp)) >= 2 && len([]rune(cp)) <= 30 {
+				cleanCatchphrases = append(cleanCatchphrases, cp)
+			}
+		}
+		if len(cleanCatchphrases) > 0 {
+			suffixes := []string{"，刚才走开了一下", "，刚在看手机呢", "，怎么啦？"}
+			return pickVariant(cleanCatchphrases) + pickVariant(suffixes)
+		}
+	}
+
+	return pickVariant([]string{
+		"刚在看手机，怎么啦？",
+		"哎，刚看到消息~",
+		"在呢，刚才没注意看手机，怎么啦？",
+		"刚才走开了一下，怎么啦？",
+	})
+}
+
+// GetPersonaFallback returns a lively, authentic fallback response based on persona, user input, and relationship state.
+func GetPersonaFallback(activeP *persona.LoadedPersona, userContent string, relState ...*relationship.FullSessionState) string {
+	return getPersonaFallback(activeP, userContent, relState...)
 }
 
 func cleanSinglePassOutput(text, targetSpeaker string) string {
 	cleaned := cleanOutput(text)
 
-	// If output was wrapped in markdown code block, extract it
-	if strings.HasPrefix(cleaned, "```json") {
-		cleaned = strings.TrimPrefix(cleaned, "```json")
-		if idx := strings.LastIndex(cleaned, "```"); idx != -1 {
-			cleaned = cleaned[:idx]
+	// 1. If output is wrapped in or contains markdown code block, extract it
+	if idx := strings.Index(cleaned, "```"); idx != -1 {
+		rest := cleaned[idx:]
+		if strings.HasPrefix(rest, "```json") {
+			rest = strings.TrimPrefix(rest, "```json")
+		} else {
+			rest = strings.TrimPrefix(rest, "```")
 		}
-	} else if strings.HasPrefix(cleaned, "```") {
-		cleaned = strings.TrimPrefix(cleaned, "```")
-		if idx := strings.LastIndex(cleaned, "```"); idx != -1 {
-			cleaned = cleaned[:idx]
+		if endIdx := strings.Index(rest, "```"); endIdx != -1 {
+			extracted := strings.TrimSpace(rest[:endIdx])
+			if extracted != "" {
+				cleaned = extracted
+			}
 		}
 	}
 	cleaned = strings.TrimSpace(cleaned)
 
-	// If output is legacy JSON with candidates or message field, unwrap safely
-	if strings.HasPrefix(cleaned, "{") && strings.HasSuffix(cleaned, "}") {
+	// 2. If output is candidate JSON or has message fields, unwrap safely
+	startJSON := strings.Index(cleaned, "{")
+	endJSON := strings.LastIndex(cleaned, "}")
+	if startJSON != -1 && endJSON > startJSON {
+		jsonSub := cleaned[startJSON : endJSON+1]
 		var candMap struct {
 			CandidateA   string `json:"candidate_a"`
 			CandidateB   string `json:"candidate_b"`
@@ -515,31 +757,71 @@ func cleanSinglePassOutput(text, targetSpeaker string) string {
 			Reply        string `json:"reply"`
 			FinalMessage string `json:"final_message"`
 			Message      string `json:"message"`
+			Content      string `json:"content"`
+			Response     string `json:"response"`
+			Text         string `json:"text"`
 		}
-		if err := json.Unmarshal([]byte(cleaned), &candMap); err == nil {
+		if err := json.Unmarshal([]byte(jsonSub), &candMap); err == nil {
 			if candMap.CandidateA != "" {
 				cleaned = candMap.CandidateA
-			} else if candMap.CandidateB != "" {
-				cleaned = candMap.CandidateB
-			} else if candMap.CandidateC != "" {
-				cleaned = candMap.CandidateC
 			} else if candMap.FinalMessage != "" {
 				cleaned = candMap.FinalMessage
 			} else if candMap.Reply != "" {
 				cleaned = candMap.Reply
 			} else if candMap.Message != "" {
 				cleaned = candMap.Message
+			} else if candMap.Content != "" {
+				cleaned = candMap.Content
+			} else if candMap.Response != "" {
+				cleaned = candMap.Response
+			} else if candMap.Text != "" {
+				cleaned = candMap.Text
+			} else if candMap.CandidateB != "" {
+				cleaned = candMap.CandidateB
+			} else if candMap.CandidateC != "" {
+				cleaned = candMap.CandidateC
 			}
 		}
 	}
 	cleaned = strings.TrimSpace(cleaned)
 
-	// Repeatedly strip speaker prefixes and surrounding quotes safely without UTF-8 byte tearing
+	// 3. Line-by-line script detection & Group announcement filtering
+	lines := strings.Split(cleaned, "\n")
+	var validLines []string
+	userPrefixPattern := regexp.MustCompile(`^(?i)(?:user|用户|human|counterpart)[:：\s]`)
+
+	for _, l := range lines {
+		trimmedLine := strings.TrimSpace(l)
+		if trimmedLine == "" {
+			continue
+		}
+		// Strip markdown headers like ### 2026-05-27 or ## Section
+		if strings.HasPrefix(trimmedLine, "#") {
+			continue
+		}
+		// Drop group announcement lines or system notices
+		if isGroupAnnouncementOrSystemArtifact(trimmedLine) {
+			continue
+		}
+		// If line is a User/Counterpart prompt line in a leaked dialogue transcript, skip it if other lines exist
+		if userPrefixPattern.MatchString(trimmedLine) && len(lines) > 1 {
+			continue
+		}
+		validLines = append(validLines, trimmedLine)
+	}
+
+	if len(validLines) == 0 {
+		return ""
+	}
+	cleaned = strings.Join(validLines, "\n")
+
+	// 4. Repeatedly strip speaker prefixes and surrounding quotes safely
 	var reSpeaker *regexp.Regexp
 	if targetSpeaker != "" {
-		reSpeaker = regexp.MustCompile(`^(?i)` + regexp.QuoteMeta(targetSpeaker) + `[:：]\s*`)
+		reSpeaker = regexp.MustCompile(`^(?i)(?:` + regexp.QuoteMeta(targetSpeaker) + `|[\[【(]` + regexp.QuoteMeta(targetSpeaker) + `[\]】)])[:：]\s*`)
 	}
-	reCommonPrefix := regexp.MustCompile(`^(?i)(?:AI|Assistant|助手|回复|答|说)[:：]\s*`)
+	reCommonPrefix := regexp.MustCompile(`^(?i)(?:王雅雯|雅雯|Ms\.Yawen|Yawen|User|用户|Human|Counterpart|AI|Assistant|助手|小助手|Bot|System|系统|回复|答|说)[:：]\s*`)
+	reBracketPrefix := regexp.MustCompile(`^(?i)[\[【(](?:王雅雯|雅雯|Ms\.Yawen|Yawen|User|用户|Human|Counterpart|AI|Assistant|助手|小助手|Bot|System|系统)[\]】)][:：]?\s*`)
 
 	for {
 		prev := cleaned
@@ -547,6 +829,7 @@ func cleanSinglePassOutput(text, targetSpeaker string) string {
 			cleaned = reSpeaker.ReplaceAllString(cleaned, "")
 		}
 		cleaned = reCommonPrefix.ReplaceAllString(cleaned, "")
+		cleaned = reBracketPrefix.ReplaceAllString(cleaned, "")
 		cleaned = strings.TrimSpace(cleaned)
 
 		// Strip surrounding quotes safely without byte slicing multibyte UTF-8
@@ -558,6 +841,10 @@ func cleanSinglePassOutput(text, targetSpeaker string) string {
 			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "“"), "”")
 		} else if strings.HasPrefix(cleaned, "‘") && strings.HasSuffix(cleaned, "’") {
 			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "‘"), "’")
+		} else if strings.HasPrefix(cleaned, "「") && strings.HasSuffix(cleaned, "」") {
+			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "「"), "」")
+		} else if strings.HasPrefix(cleaned, "『") && strings.HasSuffix(cleaned, "』") {
+			cleaned = strings.TrimSuffix(strings.TrimPrefix(cleaned, "『"), "』")
 		}
 		cleaned = strings.TrimSpace(cleaned)
 
@@ -566,22 +853,29 @@ func cleanSinglePassOutput(text, targetSpeaker string) string {
 		}
 	}
 
-	// Strip trailing periods for casual IM style
+	// 5. Strip trailing periods for casual IM style
 	cleaned = strings.TrimRight(cleaned, "。.")
 
-	// If multiple lines, take first 1-2 non-empty lines
-	lines := strings.Split(cleaned, "\n")
-	var nonEmpties []string
-	for _, l := range lines {
+	// 6. If multiple lines, take first 1-2 non-empty lines
+	splitLines := strings.Split(cleaned, "\n")
+	var finalLines []string
+	for _, l := range splitLines {
 		trimmed := strings.TrimSpace(l)
-		if trimmed != "" {
-			nonEmpties = append(nonEmpties, trimmed)
+		if trimmed != "" && !isGroupAnnouncementOrSystemArtifact(trimmed) {
+			finalLines = append(finalLines, trimmed)
 		}
 	}
-	if len(nonEmpties) > 2 {
-		cleaned = strings.Join(nonEmpties[:2], " ")
-	} else if len(nonEmpties) > 0 {
-		cleaned = strings.Join(nonEmpties, " ")
+	if len(finalLines) > 2 {
+		cleaned = strings.Join(finalLines[:2], " ")
+	} else if len(finalLines) > 0 {
+		cleaned = strings.Join(finalLines, " ")
+	} else {
+		cleaned = ""
+	}
+
+	// 7. Final check for group announcement artifacts
+	if isGroupAnnouncementOrSystemArtifact(cleaned) {
+		return ""
 	}
 
 	return strings.TrimSpace(cleaned)

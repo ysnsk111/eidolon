@@ -15,6 +15,7 @@ import (
 
 	"eidolon/server/internal/memory"
 	"eidolon/server/internal/persona"
+	"eidolon/server/internal/relationship"
 	"eidolon/server/internal/runtime"
 	"eidolon/server/internal/scheduler"
 	"eidolon/server/internal/storage"
@@ -738,5 +739,306 @@ func TestRuntime_RepeatedSpeakerPrefixStripping(t *testing.T) {
 				t.Errorf("[%s] Expected %q, got %q", tc.name, tc.expected, got)
 			}
 		})
+	}
+}
+
+func TestRuntime_CasualCallsAndPersonaName_LivelyNaturalResponses(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_casual.db")
+	personasDir := filepath.Join(tempDir, "personas")
+
+	store, err := storage.NewStorage(dbPath)
+	if err != nil {
+		t.Fatalf("Storage creation failed: %v", err)
+	}
+	defer store.Close()
+
+	personaMgr := persona.NewPersonaManager(personasDir)
+	memoryEng := memory.NewEngine(store)
+	sched := scheduler.NewScheduler(scheduler.Config{BaseDelayMs: 2000})
+
+	// Use default persona (Ms.Yawen / 王雅雯)
+	orch := runtime.NewOrchestrator(store, personaMgr, memoryEng, sched, runtime.LLMConfig{})
+
+	casualPrompts := []string{
+		"oi",
+		"哈喽",
+		"王雅雯",
+		"雅雯",
+		"王雅雯！",
+		"雅雯在吗",
+		"小雅",
+		"hello",
+		"嗨",
+	}
+
+	seenResponses := make(map[string]bool)
+
+	for _, prompt := range casualPrompts {
+		res, err := orch.ProcessMessage("sess_casual", "user_1", prompt)
+		if err != nil {
+			t.Fatalf("ProcessMessage failed on prompt %q: %v", prompt, err)
+		}
+
+		got := res.FinalMessage
+
+		// 1. Must never produce legacy repetitive boilerplates
+		if got == "在呢，怎么啦~" || strings.Contains(got, "在呢，怎么啦~") {
+			t.Fatalf("VIOLATION: Prompt %q returned repetitive boilerplate '在呢，怎么啦~'", prompt)
+		}
+		if got == "在忙呢，稍等下哦" || strings.Contains(got, "在忙呢，稍等下哦") {
+			t.Fatalf("VIOLATION: Prompt %q returned mechanical boilerplate '在忙呢，稍等下哦'", prompt)
+		}
+
+		// 2. Must never produce group announcement artifacts
+		if strings.Contains(got, "我是群聊") || strings.Contains(got, "群公告") {
+			t.Fatalf("VIOLATION: Prompt %q returned group announcement artifact: %q", prompt, got)
+		}
+
+		// 3. Must be authentic and lively companion tone
+		if strings.TrimSpace(got) == "" {
+			t.Fatalf("VIOLATION: Prompt %q produced empty response", prompt)
+		}
+
+		seenResponses[got] = true
+	}
+
+	// Verify natural variation across casual calls (not always returning identical response)
+	if len(seenResponses) < 2 {
+		t.Errorf("Expected natural variation across casual calls, but got only %d unique responses: %v", len(seenResponses), seenResponses)
+	}
+}
+
+func TestRuntime_DirtyDistilledOpeners_StrictGroupAnnouncementFiltering(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_dirty.db")
+	personasDir := filepath.Join(tempDir, "personas")
+	personaID := "dirty_persona"
+	pDir := filepath.Join(personasDir, personaID)
+	_ = os.MkdirAll(pDir, 0755)
+
+	manifest := map[string]interface{}{"name": personaID, "version": "1.1.0"}
+	manData, _ := json.Marshal(manifest)
+	_ = os.WriteFile(filepath.Join(pDir, "manifest.json"), manData, 0644)
+
+	personaDetails := map[string]interface{}{
+		"id":             personaID,
+		"name":           personaID,
+		"target_speaker": personaID,
+		"linguistic_fingerprint": map[string]interface{}{
+			"openers": []string{
+				"我是群聊“河南省实验中学初一36”",
+				"群公告: 请大家遵守纪律",
+				"[图片]",
+				"在呢，怎么啦~",
+			},
+			"vocabulary": map[string]interface{}{
+				"catchphrases": []string{
+					"我是群聊“河南省实验中学”",
+					"[图片]",
+				},
+			},
+		},
+		"system_prompts": map[string]interface{}{
+			"generator": "You are test persona.",
+		},
+	}
+	pData, _ := json.Marshal(personaDetails)
+	_ = os.WriteFile(filepath.Join(pDir, "persona.json"), pData, 0644)
+
+	store, err := storage.NewStorage(dbPath)
+	if err != nil {
+		t.Fatalf("Storage creation failed: %v", err)
+	}
+	defer store.Close()
+
+	personaMgr := persona.NewPersonaManager(personasDir)
+	if _, err := personaMgr.LoadPersona(personaID); err != nil {
+		t.Fatalf("LoadPersona failed: %v", err)
+	}
+
+	memoryEng := memory.NewEngine(store)
+	sched := scheduler.NewScheduler(scheduler.Config{BaseDelayMs: 2000})
+
+	orch := runtime.NewOrchestrator(store, personaMgr, memoryEng, sched, runtime.LLMConfig{})
+
+	testInputs := []string{
+		"你好呀",
+		"今天有什么计划",
+		"在干嘛呢",
+	}
+
+	for _, input := range testInputs {
+		res, err := orch.ProcessMessage("sess_dirty", "user_1", input)
+		if err != nil {
+			t.Fatalf("ProcessMessage failed on input %q: %v", input, err)
+		}
+
+		got := res.FinalMessage
+		if strings.Contains(got, "我是群聊") {
+			t.Fatalf("VIOLATION: Dirty opener '我是群聊' leaked into output: %q", got)
+		}
+		if strings.Contains(got, "群公告") {
+			t.Fatalf("VIOLATION: Dirty opener '群公告' leaked into output: %q", got)
+		}
+		if strings.Contains(got, "[图片]") {
+			t.Fatalf("VIOLATION: Dirty opener '[图片]' leaked into output: %q", got)
+		}
+		if strings.Contains(got, "在呢，怎么啦~") {
+			t.Fatalf("VIOLATION: Legacy boilerplate '在呢，怎么啦~' leaked into output: %q", got)
+		}
+		if strings.TrimSpace(got) == "" {
+			t.Fatalf("VIOLATION: Output was empty for input %q", input)
+		}
+	}
+}
+
+func TestRuntime_CleanSinglePassOutput_LeakedSpeakerAndTranscripts(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		speaker  string
+		expected string
+	}{
+		{
+			name:     "Leaked persona prefix 王雅雯",
+			input:    "王雅雯: 知道啦，等我一下哈",
+			speaker:  "Ms.Yawen",
+			expected: "知道啦，等我一下哈",
+		},
+		{
+			name:     "Leaked persona prefix 雅雯 with Chinese colon",
+			input:    "雅雯：好呀好呀",
+			speaker:  "Ms.Yawen",
+			expected: "好呀好呀",
+		},
+		{
+			name:     "Multi-line transcript containing User prompt and persona reply",
+			input:    "User: 王雅雯\n王雅雯: 哎，怎么啦？",
+			speaker:  "Ms.Yawen",
+			expected: "哎，怎么啦？",
+		},
+		{
+			name:     "Markdown JSON block with candidate_a",
+			input:    "```json\n{\"candidate_a\": \"王雅雯: 马上就到了\"}\n```",
+			speaker:  "Ms.Yawen",
+			expected: "马上就到了",
+		},
+		{
+			name:     "Markdown JSON block with reply field",
+			input:    "```json\n{\"reply\": \"哈哈太逗了\"}\n```",
+			speaker:  "Ms.Yawen",
+			expected: "哈哈太逗了",
+		},
+		{
+			name:     "Group announcement prefix mixed with dialogue",
+			input:    "我是群聊“河南省实验中学初一36”\n好呀好呀，晚上见",
+			speaker:  "Ms.Yawen",
+			expected: "好呀好呀，晚上见",
+		},
+		{
+			name:     "Pure group announcement becomes empty",
+			input:    "我是群聊“河南省实验中学初一36”",
+			speaker:  "Ms.Yawen",
+			expected: "",
+		},
+		{
+			name:     "Bracketed persona prefix",
+			input:    "【王雅雯】: 摸鱼呢？",
+			speaker:  "Ms.Yawen",
+			expected: "摸鱼呢？",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runtime.CleanSinglePassOutput(tc.input, tc.speaker)
+			if got != tc.expected {
+				t.Errorf("[%s] Expected %q, got %q", tc.name, tc.expected, got)
+			}
+		})
+	}
+}
+
+func TestRuntime_SanitizeOutput_PreservesShortColloquialAndFiltersAI(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Short 2-character colloquial preserved",
+			input:    "好呀",
+			expected: "好呀",
+		},
+		{
+			name:     "Short 2-character greeting preserved",
+			input:    "在呀",
+			expected: "在呀",
+		},
+		{
+			name:     "AI disclaimer stripped while 2-character colloquial preserved",
+			input:    "作为AI语言模型，我无法回答。好呀",
+			expected: "好呀",
+		},
+		{
+			name:     "我是AI stripped while colloquial preserved",
+			input:    "其实我是AI。在呢",
+			expected: "在呢",
+		},
+		{
+			name:     "Pure AI disclaimer falls back without repetitive boilerplate",
+			input:    "作为AI语言模型，我无法提供该服务",
+			expected: "刚才在忙呢，怎么啦？",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runtime.SanitizeOutput(tc.input, "Ms.Yawen")
+			if got != tc.expected {
+				t.Errorf("[%s] Expected %q, got %q", tc.name, tc.expected, got)
+			}
+			if strings.Contains(got, "在呢，怎么啦~") {
+				t.Errorf("[%s] Leaked legacy boilerplate '在呢，怎么啦~'", tc.name)
+			}
+			if strings.Contains(got, "在忙呢，稍等下哦") {
+				t.Errorf("[%s] Leaked legacy boilerplate '在忙呢，稍等下哦'", tc.name)
+			}
+		})
+	}
+}
+
+func TestRuntime_RelationshipStateAwareFallback(t *testing.T) {
+	loaded := persona.NewPersonaManager("").GetActivePersona()
+
+	// 1. Annoyed relationship
+	relStateAnnoyed := &relationship.FullSessionState{
+		Relationship: relationship.RelationshipState{
+			Phase:      relationship.PhaseAnnoyed,
+			Irritation: 0.8,
+		},
+	}
+	gotAnnoyed := runtime.GetPersonaFallback(loaded, "oi", relStateAnnoyed)
+	if strings.Contains(gotAnnoyed, "在呢，怎么啦~") {
+		t.Errorf("Annoyed fallback leaked boilerplate: %s", gotAnnoyed)
+	}
+	if gotAnnoyed == "" {
+		t.Errorf("Annoyed fallback returned empty string")
+	}
+
+	// 2. Warm relationship
+	relStateWarm := &relationship.FullSessionState{
+		Relationship: relationship.RelationshipState{
+			Phase:  relationship.PhaseWarm,
+			Warmth: 0.9,
+		},
+	}
+	gotWarm := runtime.GetPersonaFallback(loaded, "oi", relStateWarm)
+	if strings.Contains(gotWarm, "在呢，怎么啦~") {
+		t.Errorf("Warm fallback leaked boilerplate: %s", gotWarm)
+	}
+	if gotWarm == "" {
+		t.Errorf("Warm fallback returned empty string")
 	}
 }

@@ -1,4 +1,4 @@
-# EIDOLON v1.3.1
+# EIDOLON v1.4.0-preview.1
 
 <p align="center">
   <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
@@ -18,13 +18,13 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.3.1-blue.svg" alt="Release: v1.3.1">
+  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.1-blue.svg" alt="Release: v1.4.0-preview.1">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
   <img src="https://img.shields.io/badge/SQLite-Native%20ACID-003B57.svg" alt="SQLite: Native ACID">
   <img src="https://img.shields.io/badge/L4%20State-BSM%20Engine-ff69b4.svg" alt="L4 State: BSM Engine">
-  <img src="https://img.shields.io/badge/Tests-234%20Passed-brightgreen.svg" alt="Tests: 234 Passed">
+  <img src="https://img.shields.io/badge/Tests-246%20Passed-brightgreen.svg" alt="Tests: 246 Passed">
 </p>
 
 ---
@@ -548,11 +548,33 @@ npm run build:server && eidolon service start
 | `eidolon logs [-n lines]` | デーモンのリアルタイムログの閲覧 |
 | `eidolon status` | システム全体のステータス確認 |
 
-[↑ 返回顶部 / Back to Top](#eidolon-v131)
+[↑ 返回顶部 / Back to Top](#eidolon-v140-preview1)
 
 ---
 
 ## 8. Changelog / 更新日志
+
+### v1.4.0-preview.1 (2026-09-23)
+
+**🚀 重大算法重构与失真根治 / Major Architectural Overhaul & Anti-Distortion**
+
+- **群聊声明与系统噪讯零泄漏保障 (Zero System Message Leakage)**:
+  - 重构 `cli/ingestion/sanitize.js` 正则识别，严密捕获包含末尾问号/非对称引号的畸形群声明（如 `我是群聊“河南省实验中学初一36”?`）。
+  - 全局注入 `isPollutedContent(text)` 与 `cleanMessageContent(text)`，在特征提取及 few-shot 构建全阶段前置剔除。
+  - 修复 `cli/ingestion/md.js` Markdown 解析器中 `### YYYY-MM-DD` 日期标题与群系统公告与发言者归属耦合的缺陷，杜绝系统元信息污染对话上下文。
+  - `cli/ingestion/normalize.js` 严密隔离 targetSpeaker 与 counterpartSpeaker，彻底丢弃非对话内容。
+- **蒸馏引擎失真根除与角色颠倒防护 (Distillation Engine & Role-Reversal Protection)**:
+  - 彻底重构 `cli/distillation/persona.js` 中的 `buildFewShotBlock` 构造算法，显式校验 prompt 来自 counterpartSpeaker、response 来自 targetSpeaker，根除角色反转与循环第一句话的机械死循环。
+  - 修复中文字符空隙分词缺陷 (`cli/distillation/language.js`)，新增 `normalizeChineseSpaces` 清洗由于 CJK N-gram 导致的异常空格词（如 `图 片` -> `图片`，`好 吧` -> `好吧`），严密过滤高频口头禅列表（提取纯正自然口语如 `好吧, 没事, 真的, 晚安, 行啊, 也是, 确实`）。
+  - 上下文化 Emoji 建模 (`cli/distillation/assets.js`)：建立 $P(\text{emoji} \mid \text{context}, \text{emotion})$ 真实语料概率分布，绑定真实情感上下文，消除 emoji 错位与生硬感。
+- **Go 运行时真人模拟兜底与输出净化 (Go Runtime Human Simulation Overhaul)**:
+  - 彻底铲除 Go 运行时 (`server/internal/runtime/runtime.go`) 中所有机械化兜底台词（`"在呢，怎么啦~"`、`"在忙呢，稍等下哦"`）。
+  - 实现基于关系温暖度与昼夜时段的动态口语化短呼兜底（对 `oi`、称呼呼唤等实现符合真人心理的丰富应答）。
+  - 重构 `cleanSinglePassOutput`，杜绝任何候选标签（`Yawen:`、`Target:`、`Candidate:`）或残余标记泄露。
+  - 重构 `server/internal/persona/persona.go` 增强 LinguisticFingerprint、openers、catchphrases 级联容错解析。
+- **测试覆盖与质量验证 (Testing & Verification)**:
+  - 新增 `tests/distillation/engine_overhaul_verification.test.js`，Node.js 测试集扩充至 246 个测试（52 个测试套件全部通过，0 失败）。
+  - Go runtime、relationship、memory、storage、scheduler、telegram 模块 100% 通过单测。
 
 ### v1.3.1 (2026-09-22)
 

@@ -5,6 +5,9 @@ import {
   extractDateFromHeader,
   isGroupAnnouncement,
   isSystemNotice,
+  isPollutedContent,
+  cleanMessageContent,
+  isSystemSender,
 } from './sanitize.js';
 
 export function parseMdChat(filePath, options = {}) {
@@ -41,11 +44,24 @@ export function parseMdString(rawText, options = {}) {
   let currentMsg = null;
   let simulatedEpoch = Date.now() - 30 * 24 * 3600 * 1000;
 
+  function pushCurrentMsg() {
+    if (currentMsg && currentMsg.content) {
+      if (
+        !isSystemSender(currentMsg.sender) &&
+        !isGroupAnnouncement(currentMsg.content) &&
+        !isSystemNotice(currentMsg.content) &&
+        !/我是群聊/i.test(currentMsg.content)
+      ) {
+        rawMessages.push(currentMsg);
+      }
+    }
+    currentMsg = null;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trimEnd();
     if (!line) {
       if (currentMsg && currentMsg.content) {
-        // preserve paragraph break inside message
         currentMsg.content += '\n';
       }
       continue;
@@ -56,10 +72,7 @@ export function parseMdString(rawText, options = {}) {
 
     // Standalone date or session separator header: ### 2026-05-27
     if (isDateHeader(line)) {
-      if (currentMsg) {
-        rawMessages.push(currentMsg);
-        currentMsg = null;
-      }
+      pushCurrentMsg();
       const extractedDate = extractDateFromHeader(line);
       if (extractedDate) {
         const parsed = new Date(extractedDate);
@@ -70,103 +83,226 @@ export function parseMdString(rawText, options = {}) {
       continue;
     }
 
+    // Drop any standalone system notice or group announcement
+    if (
+      isSystemNotice(line) ||
+      isGroupAnnouncement(line) ||
+      /我是群聊/i.test(line) ||
+      /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(line.trim())
+    ) {
+      pushCurrentMsg();
+      continue;
+    }
+
+    // 1. Header with Date + Sender
     let match = line.match(pHeaderDateSender);
     if (match && match[2] && match[2].trim()) {
-      if (currentMsg) rawMessages.push(currentMsg);
-      const [, timestampRaw, sender, body] = match;
+      const sender = match[2].trim();
+      const body = match[3] ? match[3].trim() : '';
+      if (isSystemSender(sender)) {
+        pushCurrentMsg();
+        continue;
+      }
+      if (
+        isGroupAnnouncement(body) ||
+        isSystemNotice(body) ||
+        /我是群聊/i.test(body) ||
+        /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+      ) {
+        pushCurrentMsg();
+        continue;
+      }
+      pushCurrentMsg();
       currentMsg = {
-        timestamp: timestampRaw?.trim() || new Date(simulatedEpoch).toISOString(),
-        sender: sender.trim(),
-        content: body ? body.trim() : '',
+        timestamp: match[1]?.trim() || new Date(simulatedEpoch).toISOString(),
+        sender,
+        content: body,
         raw: line,
       };
       continue;
     }
 
+    // 2. Bold Sender
     match = line.match(pBoldSender);
     if (match && match[1] && match[1].trim()) {
-      if (currentMsg) rawMessages.push(currentMsg);
-      const [, sender, timestampRaw, body] = match;
+      const sender = match[1].trim();
+      const body = match[3] ? match[3].trim() : '';
+      if (isSystemSender(sender)) {
+        pushCurrentMsg();
+        continue;
+      }
+      if (
+        isGroupAnnouncement(body) ||
+        isSystemNotice(body) ||
+        /我是群聊/i.test(body) ||
+        /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+      ) {
+        pushCurrentMsg();
+        continue;
+      }
+      pushCurrentMsg();
+      const timestampRaw = match[2];
       if (timestampRaw) simulatedEpoch = new Date(timestampRaw).getTime() || simulatedEpoch;
       else simulatedEpoch += 60000;
       currentMsg = {
         timestamp: timestampRaw ? timestampRaw.trim() : new Date(simulatedEpoch).toISOString(),
-        sender: sender.trim(),
-        content: body ? body.trim() : '',
+        sender,
+        content: body,
         raw: line,
       };
       continue;
     }
 
+    // 3. Timestamp + Sender
     match = line.match(pTimestampSender);
     if (match && match[2] && match[2].trim()) {
-      if (currentMsg) rawMessages.push(currentMsg);
-      const [, timestampRaw, sender, body] = match;
+      const sender = match[2].trim();
+      const body = match[3] ? match[3].trim() : '';
+      if (isSystemSender(sender)) {
+        pushCurrentMsg();
+        continue;
+      }
+      if (
+        isGroupAnnouncement(body) ||
+        isSystemNotice(body) ||
+        /我是群聊/i.test(body) ||
+        /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+      ) {
+        pushCurrentMsg();
+        continue;
+      }
+      pushCurrentMsg();
       currentMsg = {
-        timestamp: timestampRaw.trim(),
-        sender: sender.trim(),
-        content: body ? body.trim() : '',
+        timestamp: match[1].trim(),
+        sender,
+        content: body,
         raw: line,
       };
       continue;
     }
 
+    // 4. Blockquote Sender
     match = line.match(pQuoteSender);
     if (match && match[2] && match[2].trim() && !match[2].startsWith('http')) {
-      if (currentMsg) rawMessages.push(currentMsg);
-      const [, timestampRaw, sender, body] = match;
+      const sender = match[2].trim();
+      const body = match[3] ? match[3].trim() : '';
+      if (isSystemSender(sender)) {
+        pushCurrentMsg();
+        continue;
+      }
+      if (
+        isGroupAnnouncement(body) ||
+        isSystemNotice(body) ||
+        /我是群聊/i.test(body) ||
+        /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+      ) {
+        pushCurrentMsg();
+        continue;
+      }
+      pushCurrentMsg();
+      const timestampRaw = match[1];
       if (timestampRaw) simulatedEpoch = new Date(timestampRaw).getTime() || simulatedEpoch;
       else simulatedEpoch += 60000;
       currentMsg = {
         timestamp: timestampRaw ? timestampRaw.trim() : new Date(simulatedEpoch).toISOString(),
-        sender: sender.trim(),
-        content: body ? body.trim() : '',
+        sender,
+        content: body,
         raw: line,
       };
       continue;
     }
 
+    // 5. Bullet Sender
     match = line.match(pBulletSender);
     if (match && match[1] && match[1].trim() && !match[1].startsWith('http')) {
-      if (currentMsg) rawMessages.push(currentMsg);
+      const sender = match[1].trim();
+      const body = match[2] ? match[2].trim() : '';
+      if (isSystemSender(sender)) {
+        pushCurrentMsg();
+        continue;
+      }
+      if (
+        isGroupAnnouncement(body) ||
+        isSystemNotice(body) ||
+        /我是群聊/i.test(body) ||
+        /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+      ) {
+        pushCurrentMsg();
+        continue;
+      }
+      pushCurrentMsg();
       simulatedEpoch += 60000;
       currentMsg = {
         timestamp: new Date(simulatedEpoch).toISOString(),
-        sender: match[1].trim(),
-        content: match[2] ? match[2].trim() : '',
+        sender,
+        content: body,
         raw: line,
       };
       continue;
     }
 
-    // Header with speaker name: ### Alice
+    // 6. Header with speaker name: ### Alice
     match = line.match(pHeaderSenderDate);
-    if (match && match[1] && match[1].trim() && !match[1].toLowerCase().includes('conversation') && !match[1].toLowerCase().includes('chat')) {
-      if (currentMsg) rawMessages.push(currentMsg);
-      const [, sender, timestampRaw, body] = match;
+    if (
+      match &&
+      match[1] &&
+      match[1].trim() &&
+      !match[1].toLowerCase().includes('conversation') &&
+      !match[1].toLowerCase().includes('chat') &&
+      !match[1].toLowerCase().includes('section') &&
+      !match[1].toLowerCase().includes('notice') &&
+      !isSystemSender(match[1])
+    ) {
+      const sender = match[1].trim();
+      const body = match[3] ? match[3].trim() : '';
+      if (
+        isGroupAnnouncement(body) ||
+        isSystemNotice(body) ||
+        /我是群聊/i.test(body) ||
+        /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+      ) {
+        pushCurrentMsg();
+        continue;
+      }
+      pushCurrentMsg();
+      const timestampRaw = match[2];
       if (timestampRaw) simulatedEpoch = new Date(timestampRaw).getTime() || simulatedEpoch;
       else simulatedEpoch += 60000;
       currentMsg = {
         timestamp: timestampRaw ? timestampRaw.trim() : new Date(simulatedEpoch).toISOString(),
-        sender: sender.trim(),
-        content: body ? body.trim() : '',
+        sender,
+        content: body,
         raw: line,
       };
       continue;
     }
 
-    // Fallback: Alice: content
+    // 7. Fallback: Alice: content
     const matchSpeaker = line.match(pSpeakerOnly);
     if (matchSpeaker && !line.startsWith('http://') && !line.startsWith('https://') && !line.startsWith('//')) {
       const senderCandidate = matchSpeaker[1].trim();
-      // Only treat as speaker if sender candidate is reasonably short and not markdown formatting
-      if (senderCandidate.length >= 1 && senderCandidate.length <= 25 && !senderCandidate.includes('[')) {
-        if (currentMsg) rawMessages.push(currentMsg);
+      if (
+        senderCandidate.length >= 1 &&
+        senderCandidate.length <= 25 &&
+        !senderCandidate.includes('[') &&
+        !isSystemSender(senderCandidate)
+      ) {
+        const body = matchSpeaker[2] ? matchSpeaker[2].trim() : '';
+        if (
+          isGroupAnnouncement(body) ||
+          isSystemNotice(body) ||
+          /我是群聊/i.test(body) ||
+          /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(body)
+        ) {
+          pushCurrentMsg();
+          continue;
+        }
+        pushCurrentMsg();
         simulatedEpoch += 60000;
         currentMsg = {
           timestamp: new Date(simulatedEpoch).toISOString(),
           sender: senderCandidate,
-          content: matchSpeaker[2] ? matchSpeaker[2].trim() : '',
+          content: body,
           raw: line,
         };
         continue;
@@ -175,19 +311,18 @@ export function parseMdString(rawText, options = {}) {
 
     // Non-message Markdown headers (e.g. # Title, ## Section)
     if (/^#{1,6}\s+/.test(line)) {
-      if (currentMsg) {
-        rawMessages.push(currentMsg);
-        currentMsg = null;
-      }
+      pushCurrentMsg();
       continue;
     }
 
     // System notices and group announcements
-    if (isSystemNotice(line) || isGroupAnnouncement(line)) {
-      if (currentMsg) {
-        rawMessages.push(currentMsg);
-        currentMsg = null;
-      }
+    if (
+      isSystemNotice(line) ||
+      isGroupAnnouncement(line) ||
+      /我是群聊/i.test(line) ||
+      /^(?:群公告|群规|群主|本群|欢迎加入|欢迎新成员)/i.test(line.trim())
+    ) {
+      pushCurrentMsg();
       continue;
     }
 
@@ -198,9 +333,7 @@ export function parseMdString(rawText, options = {}) {
     }
   }
 
-  if (currentMsg && currentMsg.content) {
-    rawMessages.push(currentMsg);
-  }
+  pushCurrentMsg();
 
   return normalizeMessages(rawMessages, options);
 }

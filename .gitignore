@@ -27,6 +27,11 @@ raw_data/
 completed_result/
 *.eidolon
 world_context.md
+*chat_history*
+chatgpt_manual_extracted.md
+*.csv
+*.xlsx
+*.parquet
 
 # Dependencies & Build Artefacts
 node_modules/
