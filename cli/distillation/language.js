@@ -440,6 +440,20 @@ function extractCatchphrases(texts, vocabMap, biMap) {
   );
 }
 
+function isOpeningCandidate(text) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 1 || trimmed.length > 20) return false;
+  return /^(?:早|早安|早呀|早上好|哈喽|哈罗|嗨|hi|hello|hey|在吗|在嘛|在不|在呢吗|晚上好|中午好|下课了|刚下课|刚到家|到家了|刚醒|醒了|你醒啦|出来|在干嘛|干嘛呢|你在干嘛|吃了吗|吃饭没|跟你说|跟你讲|看这个)/i.test(trimmed);
+}
+
+function isClosingCandidate(text) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 1 || trimmed.length > 20) return false;
+  return /(?:晚安|好梦|早点睡|早点休息|去睡了|睡了|先睡了|明天聊|明天见|拜拜|byebye|bye|退了|撤了|等下聊|一会儿聊|待会聊)/i.test(trimmed);
+}
+
 function extractOpenersAndClosers(messages, targetSpeaker) {
   const openers = [];
   const closers = [];
@@ -454,30 +468,52 @@ function extractOpenersAndClosers(messages, targetSpeaker) {
     const cleaned = cleanMessageContent(m.content || '');
 
     const isValidCandidate =
-      cleaned.length >= 2 &&
-      cleaned.length <= 30 &&
+      cleaned.length >= 1 &&
+      cleaned.length <= 25 &&
       !isSystemNotice(cleaned) &&
       !isGroupAnnouncement(cleaned) &&
       !isPollutedContent(cleaned) &&
       !cleaned.startsWith('#');
 
     if (sessionStart && isTarget && isValidCandidate) {
-      openers.push(cleaned);
+      if (isOpeningCandidate(cleaned)) {
+        openers.push(cleaned);
+      }
       sessionStart = false;
     }
 
     const nextMsg = messages[i + 1];
     if (!nextMsg || nextMsg.epochMs - m.epochMs > sessionGapMs) {
       if (isTarget && isValidCandidate) {
-        closers.push(cleaned);
+        if (isClosingCandidate(cleaned)) {
+          closers.push(cleaned);
+        }
       }
       sessionStart = true;
     }
   }
 
+  const topOpeners = getTopKFreqList(openers, 8);
+  const topClosers = getTopKFreqList(closers, 8);
+
+  const fallbackOpeners = ['早呀', '在干嘛呢', '刚看到消息~', '哈喽呀'];
+  const fallbackClosers = ['晚安~', '好梦呀', '明天见！', '去睡啦'];
+
+  for (const fo of fallbackOpeners) {
+    if (topOpeners.length < 4 && !topOpeners.includes(fo)) {
+      topOpeners.push(fo);
+    }
+  }
+
+  for (const fc of fallbackClosers) {
+    if (topClosers.length < 4 && !topClosers.includes(fc)) {
+      topClosers.push(fc);
+    }
+  }
+
   return {
-    openers: getTopKFreqList(openers, 8),
-    closers: getTopKFreqList(closers, 8),
+    openers: topOpeners,
+    closers: topClosers,
   };
 }
 

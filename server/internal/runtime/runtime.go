@@ -171,7 +171,9 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	rawGen, err := o.callLLM(messages, 0.7, 200)
 	var generatedText string
 
-	if err == nil {
+	if err != nil {
+		o.store.Log("runtime", "WARN", fmt.Sprintf("callLLM failed: %v", err))
+	} else {
 		generatedText = cleanSinglePassOutput(rawGen, activeP.Persona.TargetSpeaker)
 	}
 
@@ -528,9 +530,9 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 	// Check if user is casually calling or greeting the persona ("oi", "哈喽", "王雅雯", "雅雯", etc.)
 	isCallingByNameOrGreeting := false
 
-	casualGreetings := []string{"oi", "oii", "oiii", "oy", "yo", "哈喽", "哈罗", "hello", "hi", "hey", "嗨", "嗨喽", "嗨害嗨", "喂"}
+	casualGreetings := []string{"@", "@我", "oi", "oii", "oiii", "oy", "yo", "哈喽", "哈罗", "hello", "hi", "hey", "嗨", "嗨喽", "嗨害嗨", "喂"}
 	for _, g := range casualGreetings {
-		if cleanPunct == g || (strings.HasPrefix(cleanPunct, g) && len([]rune(cleanPunct)) <= len([]rune(g))+2) {
+		if cleanPunct == g || strings.HasPrefix(cleanPunct, g) {
 			isCallingByNameOrGreeting = true
 			break
 		}
@@ -645,14 +647,26 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 		})
 	}
 
+	if strings.Contains(cleanPunct, "干嘛") || strings.Contains(cleanPunct, "为什么") || strings.Contains(cleanPunct, "为啥") || strings.Contains(cleanPunct, "干啥") || strings.Contains(cleanPunct, "发啥") || strings.Contains(cleanPunct, "怎么突然") {
+		return pickVariant([]string{
+			"没干嘛呀，就随便发发，咋啦",
+			"哈哈没啥，刚才手滑了下😂",
+			"怎么啦，好奇呀？",
+			"没干嘛呀，看看你在不在",
+			"刚在看手机呢，怎么啦？",
+		})
+	}
+
+	if strings.Contains(cleanPunct, "难受") || strings.Contains(cleanPunct, "不开心") || strings.Contains(cleanPunct, "心累") || strings.Contains(cleanPunct, "委屈") || strings.Contains(cleanPunct, "生气") {
+		return pickVariant([]string{
+			"怎么啦？是不是遇到什么烦心事了",
+			"摸摸头，怎么了呀，跟我说说呗",
+			"发生什么事啦，别一个人憋着呀",
+			"抱抱，怎么啦这是？",
+		})
+	}
+
 	if strings.Contains(userLower, "早") {
-		if activeP != nil {
-			for _, op := range activeP.GetOpeners() {
-				if strings.Contains(op, "早") && !isGroupAnnouncementOrSystemArtifact(op) {
-					return op
-				}
-			}
-		}
 		return pickVariant([]string{
 			"早呀，刚看到消息~",
 			"早啊！今天起挺早呀",
@@ -688,35 +702,13 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 		})
 	}
 
-	// General contextual fallback from distilled persona
-	if activeP != nil {
-		var cleanOpeners []string
-		for _, op := range activeP.GetOpeners() {
-			if !isGroupAnnouncementOrSystemArtifact(op) && len([]rune(op)) >= 2 && len([]rune(op)) <= 80 {
-				cleanOpeners = append(cleanOpeners, op)
-			}
-		}
-		if len(cleanOpeners) > 0 {
-			return pickVariant(cleanOpeners)
-		}
-
-		var cleanCatchphrases []string
-		for _, cp := range activeP.GetCatchphrases() {
-			if !isGroupAnnouncementOrSystemArtifact(cp) && len([]rune(cp)) >= 2 && len([]rune(cp)) <= 30 {
-				cleanCatchphrases = append(cleanCatchphrases, cp)
-			}
-		}
-		if len(cleanCatchphrases) > 0 {
-			suffixes := []string{"，刚才走开了一下", "，刚在看手机呢", "，怎么啦？"}
-			return pickVariant(cleanCatchphrases) + pickVariant(suffixes)
-		}
-	}
-
 	return pickVariant([]string{
-		"刚在看手机，怎么啦？",
+		"刚在看手机呢，怎么啦？",
 		"哎，刚看到消息~",
-		"在呢，刚才没注意看手机，怎么啦？",
+		"在呢在呢，刚才没注意看手机，怎么啦？",
 		"刚才走开了一下，怎么啦？",
+		"怎么啦怎么啦~",
+		"在呢，啥事呀~",
 	})
 }
 

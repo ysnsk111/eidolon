@@ -1,4 +1,4 @@
-# EIDOLON v1.4.0-preview.1
+# EIDOLON v1.4.0-preview.2
 
 <p align="center">
   <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.1-blue.svg" alt="Release: v1.4.0-preview.1">
+  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.2-blue.svg" alt="Release: v1.4.0-preview.2">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">

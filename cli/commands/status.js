@@ -27,7 +27,7 @@ export async function statusCommand() {
   // 2. LLM Connectivity
   const provider = new OpenAICompatibleProvider({
     ...config.llm,
-    timeoutMs: 15000,
+    timeoutMs: Math.max(config.llm?.timeoutMs || 30000, 30000),
   });
   let llmStatus = 'TESTING...';
   try {
