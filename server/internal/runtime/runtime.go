@@ -48,8 +48,8 @@ func NewOrchestrator(
 		timeout = time.Duration(llmCfg.TimeoutMs) * time.Millisecond
 		if timeout < 5*time.Second {
 			timeout = 5 * time.Second
-		} else if timeout > 15*time.Second {
-			timeout = 15 * time.Second
+		} else if timeout > 60*time.Second {
+			timeout = 60 * time.Second
 		}
 	}
 
@@ -142,7 +142,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	systemPrompt := activeP.Persona.SystemPrompts.Generator
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString(systemPrompt)
-	contextBuilder.WriteString(o.relEngine.BuildPromptDirective(relState, plan))
+	contextBuilder.WriteString(o.relEngine.BuildPromptDirective(relState, plan, perception))
 	contextBuilder.WriteString("\n\n[AUTHENTIC MEMORIES & EPISODES]\n")
 	for _, ep := range retrieval.RelevantEpisodes {
 		contextBuilder.WriteString(fmt.Sprintf("- %s\n", ep))
@@ -349,6 +349,34 @@ func SanitizeOutput(text, personaName string, fallbackVoice ...string) string {
 		return "哎，怎么啦？"
 	}
 
+	// 0. Filter greasy adult/AI girlfriend tropes that break student tsundere immersion
+	greasyReplacements := []struct {
+		target string
+		repl   string
+	}{
+		{"咋啦宝贝", "咋啦"},
+		{"宝贝，", ""},
+		{"，宝贝", ""},
+		{"宝贝", ""},
+		{"亲爱的，", ""},
+		{"亲爱的", ""},
+		{"宝宝，", ""},
+		{"宝宝", ""},
+		{"这么早就开始撒娇啦", "突然发什么神经"},
+		{"开始撒娇啦", "抽什么风啊"},
+		{"撒娇啦", "开玩笑"},
+		{"撒娇", "开玩笑"},
+		{"嘿嘿 我也在呢，一直都在", "在呢在呢"},
+		{"我也在呢，一直都在", "在呢在呢"},
+		{"一直都在 🥰", "在呢"},
+		{"一直都在🥰", "在呢"},
+		{"一直都在", "在呢"},
+	}
+	for _, gr := range greasyReplacements {
+		text = strings.ReplaceAll(text, gr.target, gr.repl)
+	}
+	text = strings.TrimSpace(text)
+
 	aiMarkers := []string{
 		"作为ai",
 		"作为一名ai",
@@ -527,7 +555,44 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 	isLateNight := (hour >= 23 || hour < 6)
 	isMorning := (hour >= 6 && hour < 11)
 
-	// Check if user is casually calling or greeting the persona ("oi", "哈喽", "王雅雯", "雅雯", etc.)
+	// 1. High-Priority Emotional Crisis / Attachment Distress Check (BEFORE any general keyword matching)
+	if strings.Contains(userLower, "离开我") || strings.Contains(userLower, "做错啥") || strings.Contains(userLower, "做错什么") || strings.Contains(userLower, "别离开") || strings.Contains(userLower, "不能离开") || strings.Contains(userLower, "丢下我") || strings.Contains(userLower, "不要离开") || strings.Contains(userLower, "躲着我") || strings.Contains(userLower, "避开我") || strings.Contains(userLower, "绕着我走") {
+		return pickVariant([]string{
+			"……你别发神经了行不行",
+			"我没说你做错什么，你别这样……",
+			"你突然说这个干嘛，先冷静点",
+			"别在网上说这些了……",
+			"你别多想了，先顾好你自己吧",
+			"我这不是在呢吗，你成天脑子里瞎想什么呢",
+		})
+	}
+
+	// 2. High-Priority Confession / Romantic Advance Check
+	if strings.Contains(userLower, "喜欢你") || strings.Contains(userLower, "我喜欢你") || strings.Contains(userLower, "爱你") || strings.Contains(userLower, "做我女朋友") || strings.Contains(userLower, "在一起吧") || strings.Contains(userLower, "表白") {
+		return pickVariant([]string{
+			"？？？你没睡醒吧",
+			"大早上的你抽什么风啊",
+			"……别瞎开玩笑",
+			"没睡醒去洗把脸吧你",
+			"谁要你喜欢了……",
+			"你发什么神经呢",
+			"……你突然说这个干嘛，怪恶心的",
+		})
+	}
+
+	// 3. High-Priority Demand / Guilt-tripping / Checking-in Check
+	if strings.Contains(userLower, "难道不应该") || strings.Contains(userLower, "打招呼") || strings.Contains(userLower, "查岗") || strings.Contains(userLower, "天天问") || strings.Contains(userLower, "为什么不理") || strings.Contains(userLower, "每天跟我") {
+		return pickVariant([]string{
+			"谁规定的啊",
+			"大早上的你查岗呢",
+			"懒得理你",
+			"天天打招呼我成打卡机了",
+			"早啊，催什么催嘛",
+			"起晚了不行啊，管这么宽干嘛",
+		})
+	}
+
+	// 4. Check if user is casually calling or greeting the persona ("oi", "哈喽", "王雅雯", "雅雯", etc.)
 	isCallingByNameOrGreeting := false
 
 	casualGreetings := []string{"@", "@我", "oi", "oii", "oiii", "oy", "yo", "哈喽", "哈罗", "hello", "hi", "hey", "嗨", "嗨喽", "嗨害嗨", "喂"}
@@ -550,7 +615,7 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 
 	if !isCallingByNameOrGreeting {
 		for _, name := range nameTriggers {
-			if cleanPunct == name || strings.HasPrefix(cleanPunct, name) || strings.Contains(trimmed, name) {
+			if cleanPunct == name || strings.HasPrefix(cleanPunct, name) || (len(cleanPunct) <= len(name)+4 && strings.Contains(trimmed, name)) {
 				isCallingByNameOrGreeting = true
 				break
 			}
@@ -576,25 +641,25 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 		} else if isWarm {
 			if isLateNight {
 				candidates = []string{
-					"还没睡呀？怎么啦~",
-					"在呀在呀，大半夜怎么突然叫我~",
-					"还没睡呢？想我啦？",
-					"在呢，怎么啦宝宝~",
+					"还没睡呀？怎么啦",
+					"在呢，这么晚找我，咋啦？",
+					"还没睡呢？啥事呀",
+					"在呢，怎么啦？",
 				}
 			} else if isMorning {
 				candidates = []string{
-					"早呀~ 怎么突然叫我~",
-					"在呀在呀，早安！怎么啦？",
-					"早啊，找我嘛~",
+					"早呀~ 怎么啦？",
+					"在呢早呀，怎么突然叫我~",
+					"早啊，刚看手机，咋啦？",
 					"在呀，今天起挺早呢，怎么啦？",
 				}
 			} else {
 				candidates = []string{
-					"在呀，怎么突然叫我~",
-					"哎！怎么啦呀~",
-					"在呢在呢，想我啦？",
+					"在呢，怎么啦？",
 					"哎，怎么啦？",
-					"在呀在呀，什么事呀~",
+					"咋啦？",
+					"在呢，有什么事呀",
+					"在的，怎么啦？",
 				}
 			}
 		} else {
@@ -631,9 +696,9 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 		if isIrritated {
 			return pickVariant([]string{"在呢，说吧", "在，怎么了", "有事吗？"})
 		} else if isWarm {
-			return pickVariant([]string{"在呀在呀！怎么啦？", "在呢~ 随时都在", "在呀在呀，怎么啦~"})
+			return pickVariant([]string{"在呢，怎么啦？", "在呀，怎么啦~", "在呢，有什么事呀"})
 		}
-		return pickVariant([]string{"在呀在呀，怎么啦？", "在的呢，怎么啦？", "在呀，有什么事呀", "在的在的，怎么啦？"})
+		return pickVariant([]string{"在呢，怎么啦？", "在的呢，怎么啦？", "在呀，有什么事呀", "在的在的，怎么啦？"})
 	}
 
 	if cleanPunct == "123" || cleanPunct == "1" || cleanPunct == "打卡" || cleanPunct == "戳戳" || strings.Contains(cleanPunct, "戳一戳") {
@@ -652,17 +717,16 @@ func getPersonaFallback(activeP *persona.LoadedPersona, userContent string, relS
 			"没干嘛呀，就随便发发，咋啦",
 			"哈哈没啥，刚才手滑了下😂",
 			"怎么啦，好奇呀？",
-			"没干嘛呀，看看你在不在",
 			"刚在看手机呢，怎么啦？",
 		})
 	}
 
 	if strings.Contains(cleanPunct, "难受") || strings.Contains(cleanPunct, "不开心") || strings.Contains(cleanPunct, "心累") || strings.Contains(cleanPunct, "委屈") || strings.Contains(cleanPunct, "生气") {
 		return pickVariant([]string{
-			"怎么啦？是不是遇到什么烦心事了",
-			"摸摸头，怎么了呀，跟我说说呗",
-			"发生什么事啦，别一个人憋着呀",
-			"抱抱，怎么啦这是？",
+			"怎么了这是，谁惹你了呀？",
+			"发生什么事啦？别一个人闷着",
+			"……行吧，跟我说说咋回事",
+			"别难受了，要不早点休息？",
 		})
 	}
 

@@ -77,11 +77,10 @@ func TestChallenger2_TimeoutBounds_StrictClamping(t *testing.T) {
 		{"Sub-boundary 4999ms clamped to 5s minimum", 4999, 5.0},
 		{"Exact minimum 5000ms accepted", 5000, 5.0},
 		{"Mid-range 8000ms accepted", 8000, 8.0},
-		{"Mid-range 12000ms accepted", 12000, 12.0},
-		{"Exact maximum 15000ms accepted", 15000, 15.0},
-		{"Over-boundary 15001ms clamped to 15s maximum", 15001, 15.0},
-		{"Legacy 45000ms clamped to 15s maximum", 45000, 15.0},
-		{"Extreme 300000ms clamped to 15s maximum", 300000, 15.0},
+		{"Mid-range 30000ms accepted", 30000, 30.0},
+		{"Exact maximum 60000ms accepted", 60000, 60.0},
+		{"Over-boundary 60001ms clamped to 60s maximum", 60001, 60.0},
+		{"Extreme 300000ms clamped to 60s maximum", 300000, 60.0},
 	}
 
 	for _, tc := range testCases {

@@ -198,7 +198,44 @@ func (e *Engine) Perceive(userContent string, recentContext []string) Perception
 		}
 	}
 
-	// 2. Complaint & Negative Emotion Detection (Section 2)
+	// 2. Emotional Crisis / Attachment Panic / Confrontation Detection
+	crisisWords := []string{"为什么离开我", "为什么要离开我", "离开我", "不能离开我", "别离开我", "不要离开我", "我做错啥了", "我做错什么了", "丢下我", "不要丢下我", "不要走", "别走", "避开我", "躲着我", "绕着我走"}
+	for _, w := range crisisWords {
+		if strings.Contains(lower, w) {
+			res.Intent = "emotional_crisis"
+			res.Sentiment = -0.60
+			res.Pressure = 0.90
+			res.Importance = 0.95
+			return res
+		}
+	}
+
+	// 3. Demand / Guilt-tripping / Checking-in Detection
+	demandWords := []string{"难道不应该", "为什么不跟我打招呼", "不该跟我打招呼", "每天跟我打招呼", "天天打招呼", "每天打招呼", "查岗", "必须打招呼"}
+	for _, w := range demandWords {
+		if strings.Contains(lower, w) {
+			res.Intent = "demand"
+			res.Sentiment = -0.20
+			res.Pressure = 0.60
+			res.Importance = 0.60
+			return res
+		}
+	}
+
+	// 4. Confession / Romantic Advance Detection
+	confessionWords := []string{"我喜欢你", "喜欢你", "我爱你", "爱你", "做我女朋友", "在一起吧", "想你了", "我想你"}
+	for _, w := range confessionWords {
+		if strings.Contains(lower, w) {
+			res.Intent = "confession"
+			res.Sentiment = 0.70
+			res.Pressure = 0.70
+			res.Affection = 0.85
+			res.Importance = 0.80
+			return res
+		}
+	}
+
+	// 5. Complaint & Negative Emotion Detection (Section 2)
 	complaintWords := []string{"怎么不理我", "又不理我", "你人呢", "去哪了", "回这么慢", "烦人", "讨厌", "无语", "生气"}
 	for _, w := range complaintWords {
 		if strings.Contains(lower, w) {
@@ -213,7 +250,7 @@ func (e *Engine) Perceive(userContent string, recentContext []string) Perception
 		}
 	}
 
-	// 3. Provocation / Conflict Escalation (Section 15)
+	// 6. Provocation / Conflict Escalation (Section 15)
 	provocationWords := []string{"你滚", "有病", "傻逼", "闭嘴", "烦死了", "受够了", "懒得理你", "分手", "别说了"}
 	for _, w := range provocationWords {
 		if strings.Contains(lower, w) {
@@ -225,8 +262,8 @@ func (e *Engine) Perceive(userContent string, recentContext []string) Perception
 		}
 	}
 
-	// 4. Affection / Sweet interaction
-	affectionWords := []string{"想你", "喜欢你", "爱你", "宝", "好可怜", "乖", "早安", "晚安", "抱抱", "摸摸"}
+	// 7. General Affection / Sweet interaction
+	affectionWords := []string{"想你", "宝", "好可怜", "乖", "早安", "晚安", "抱抱", "摸摸"}
 	for _, w := range affectionWords {
 		if strings.Contains(lower, w) {
 			res.Intent = "affection"
@@ -330,6 +367,21 @@ func (e *Engine) Step(state *FullSessionState, p PerceptionResult) {
 			deltaWarmth += 0.05
 		}
 		state.Emotion.Annoyance = clampFloat(state.Emotion.Annoyance+0.20, 0, 1)
+	case "confession":
+		state.Emotion.Embarrassment = clampFloat(state.Emotion.Embarrassment+0.65, 0, 1)
+		state.Emotion.Annoyance = clampFloat(state.Emotion.Annoyance+0.20, 0, 1)
+		deltaTension += 0.35
+		deltaAffection += 0.12
+		deltaWarmth += 0.05
+	case "emotional_crisis":
+		deltaTension += 0.45
+		deltaIrritation += 0.20
+		state.Emotion.Annoyance = clampFloat(state.Emotion.Annoyance+0.35, 0, 1)
+		state.Emotion.Embarrassment = clampFloat(state.Emotion.Embarrassment+0.30, 0, 1)
+		state.Relationship.Tension = clampFloat(state.Relationship.Tension+0.45, 0, 1)
+	case "demand":
+		deltaIrritation += 0.15
+		state.Emotion.Annoyance = clampFloat(state.Emotion.Annoyance+0.25, 0, 1)
 	case "affection":
 		deltaAffection += 0.20 * p.Affection
 		deltaWarmth += 0.18
@@ -411,52 +463,70 @@ func (e *Engine) PlanResponse(state *FullSessionState, p PerceptionResult) Respo
 		ColdnessScore:      coldness,
 	}
 
-	// 1. Determine High-Level Strategy (Section 14)
-	switch rel.Phase {
-	case PhaseConflict:
-		plan.Strategy = StrategyConflict
-		plan.Warmth = 0.15
+	// Overriding intents that mandate specific tsundere behaviors regardless of phase:
+	if p.Intent == "confession" {
+		plan.Strategy = StrategyTease
+		plan.Warmth = 0.35
 		plan.LengthGuidance = "short"
-		plan.StickerProbability = 0.02
-		plan.MessageCount = 1
-	case PhaseCold:
+		plan.SuggestedEmoji = "😅"
+	} else if p.Intent == "emotional_crisis" {
 		plan.Strategy = StrategyDistance
-		plan.Warmth = 0.25
+		plan.Warmth = 0.20
 		plan.LengthGuidance = "short"
-		plan.StickerProbability = 0.04
-		plan.MessageCount = 1
-	case PhaseAnnoyed:
+		plan.SuggestedEmoji = ""
+	} else if p.Intent == "demand" {
 		plan.Strategy = StrategyShortReply
 		plan.Warmth = 0.35
 		plan.LengthGuidance = "short"
-		plan.StickerProbability = 0.05
-	case PhaseRecovering:
-		plan.Strategy = StrategyDirectReply
-		plan.Warmth = 0.50
-		plan.LengthGuidance = "medium"
-		plan.StickerProbability = 0.12
-	case PhaseWarm:
-		if p.Intent == "tease" {
-			plan.Strategy = StrategyTease
-		} else if p.Intent == "affection" {
-			plan.Strategy = StrategyComfort
-		} else {
-			plan.Strategy = StrategyDirectReply
-		}
-		plan.Warmth = 0.85
-		plan.LengthGuidance = "medium"
-		plan.StickerProbability = 0.25
-	default:
-		// Normal phase
-		if p.Intent == "question" {
-			plan.Strategy = StrategyDirectReply
-		} else if p.Intent == "short_ack" {
-			plan.Strategy = StrategyShortReply
+		plan.SuggestedEmoji = "😂"
+	} else {
+		// 1. Determine High-Level Strategy (Section 14)
+		switch rel.Phase {
+		case PhaseConflict:
+			plan.Strategy = StrategyConflict
+			plan.Warmth = 0.15
 			plan.LengthGuidance = "short"
-		} else if p.Intent == "complaint" {
-			plan.Strategy = StrategyComfort
-		} else {
+			plan.StickerProbability = 0.02
+			plan.MessageCount = 1
+		case PhaseCold:
+			plan.Strategy = StrategyDistance
+			plan.Warmth = 0.25
+			plan.LengthGuidance = "short"
+			plan.StickerProbability = 0.04
+			plan.MessageCount = 1
+		case PhaseAnnoyed:
+			plan.Strategy = StrategyShortReply
+			plan.Warmth = 0.35
+			plan.LengthGuidance = "short"
+			plan.StickerProbability = 0.05
+		case PhaseRecovering:
 			plan.Strategy = StrategyDirectReply
+			plan.Warmth = 0.50
+			plan.LengthGuidance = "medium"
+			plan.StickerProbability = 0.12
+		case PhaseWarm:
+			if p.Intent == "tease" {
+				plan.Strategy = StrategyTease
+			} else if p.Intent == "affection" {
+				plan.Strategy = StrategyComfort
+			} else {
+				plan.Strategy = StrategyDirectReply
+			}
+			plan.Warmth = 0.85
+			plan.LengthGuidance = "medium"
+			plan.StickerProbability = 0.25
+		default:
+			// Normal phase
+			if p.Intent == "question" {
+				plan.Strategy = StrategyDirectReply
+			} else if p.Intent == "short_ack" {
+				plan.Strategy = StrategyShortReply
+				plan.LengthGuidance = "short"
+			} else if p.Intent == "complaint" {
+				plan.Strategy = StrategyComfort
+			} else {
+				plan.Strategy = StrategyDirectReply
+			}
 		}
 	}
 
@@ -514,19 +584,19 @@ func (e *Engine) sampleEmoji(rel RelationshipState, emo EmotionalState, p Percep
 
 	var candidates []emojiWeight
 	if emo.Happiness > 0.5 || emo.Excitement > 0.4 {
-		candidates = append(candidates, emojiWeight{"😄", 0.35}, emojiWeight{"✨", 0.25}, emojiWeight{"🥰", 0.20})
+		candidates = append(candidates, emojiWeight{"😂", 0.40}, emojiWeight{"👍", 0.35}, emojiWeight{"🎉", 0.25})
 	}
 	if emo.Annoyance > 0.4 || rel.Irritation > 0.4 {
-		candidates = append(candidates, emojiWeight{"🙄", 0.40}, emojiWeight{"😑", 0.30}, emojiWeight{"💢", 0.20})
+		candidates = append(candidates, emojiWeight{"🙄", 0.45}, emojiWeight{"😅", 0.35}, emojiWeight{"🤐", 0.20})
 	}
 	if emo.Embarrassment > 0.4 {
-		candidates = append(candidates, emojiWeight{"😳", 0.45}, emojiWeight{"🫣", 0.30}, emojiWeight{"🙈", 0.25})
+		candidates = append(candidates, emojiWeight{"😅", 0.50}, emojiWeight{"🤐", 0.30}, emojiWeight{"🙄", 0.20})
 	}
 	if emo.Sadness > 0.4 || rel.Hurt > 0.4 {
-		candidates = append(candidates, emojiWeight{"🥺", 0.40}, emojiWeight{"😢", 0.35}, emojiWeight{"💔", 0.25})
+		candidates = append(candidates, emojiWeight{"😭", 0.40}, emojiWeight{"🥱", 0.35}, emojiWeight{"😅", 0.25})
 	}
 	if rel.Warmth > 0.7 {
-		candidates = append(candidates, emojiWeight{"❤️", 0.30}, emojiWeight{"🐱", 0.25}, emojiWeight{"🌸", 0.20})
+		candidates = append(candidates, emojiWeight{"🥰", 0.35}, emojiWeight{"😂", 0.35}, emojiWeight{"👍", 0.30})
 	}
 
 	if len(candidates) == 0 {
@@ -566,7 +636,7 @@ func (e *Engine) sampleStickerTag(rel RelationshipState, emo EmotionalState, p P
 }
 
 // BuildPromptDirective translates the relationship state and plan into system prompt context for LLM.
-func (e *Engine) BuildPromptDirective(state *FullSessionState, plan ResponsePlan) string {
+func (e *Engine) BuildPromptDirective(state *FullSessionState, plan ResponsePlan, p ...PerceptionResult) string {
 	rel := state.Relationship
 	var b strings.Builder
 
@@ -583,6 +653,19 @@ func (e *Engine) BuildPromptDirective(state *FullSessionState, plan ResponsePlan
 	b.WriteString("• Response Strategy: " + string(plan.Strategy) + "\n")
 	b.WriteString("• Output Length Guidance: " + plan.LengthGuidance + "\n")
 
+	// Special situational guidance based on perception
+	if len(p) > 0 {
+		perc := p[0]
+		switch perc.Intent {
+		case "confession":
+			b.WriteString("• 【突发表白/直球示爱特别指令】：对方突然说“我喜欢你/想你/爱你”进行肉麻表白！你作为嘴硬傲娇的初中女生，此刻第一反应必定是震惊、慌乱、嘴硬否认、吐槽或以为对方在开玩笑/抽风（如“？？？”、“你有病吧大早上没睡醒？”、“大早上的你抽什么风啊”、“……别瞎开玩笑”、“谁要你喜欢了……”、“没睡醒去洗把脸吧你”）！绝对严禁顺水推舟接受表白，绝对严禁叫“宝贝/亲爱的/宝宝”，绝对严禁说“我也在呢一直都在🥰/撒娇”等AI女仆媚俗套话！\n")
+		case "emotional_crisis":
+			b.WriteString("• 【情感崩溃/质问离开特别指令】：对方情绪激动质问“为什么离开我/我做错啥了/不能离开我”！你感到沉重的心理压力与不知所措，想要防卫、逃避或拉开距离（如“……你别发神经了行不行”、“我没说你做错什么，你别这样……”、“在学校别找我了……”）。绝对不能嬉皮笑脸说“我又没走我手机在这呢😂”！\n")
+		case "demand":
+			b.WriteString("• 【要求打卡/查岗特别指令】：对方要求你必须每天打招呼或抱怨查岗。你傲娇回怼（如“谁规定的啊”、“大早上的你查岗呢”、“懒得理你”、“天天打招呼我成打卡机了”），绝不温顺道歉或百依百顺！\n")
+		}
+	}
+
 	// Expressive behavioral guidance
 	switch rel.Phase {
 	case PhaseConflict:
@@ -598,7 +681,7 @@ func (e *Engine) BuildPromptDirective(state *FullSessionState, plan ResponsePlan
 	default:
 		b.WriteString("• Guidance: Balanced, authentic everyday conversational rhythm.\n")
 	}
-	b.WriteString("• 真实人类对话原则：绝对不要像AI助手一样提问“你想让我做什么”或提及“任务/指令/服务”。像通讯软件里的真实好友一样随性闲聊。\n")
+	b.WriteString("• 真实中学生人设原则：你是河南省实验中学初中生，性格嘴硬傲娇、爱吐槽、有自尊心。绝不叫对方“宝贝”、“亲爱的”、“宝宝”等油腻称呼！绝对不要像AI助手一样提问“你想让我做什么”，也绝不谄媚迎合。像通讯软件里的真实好友一样随性闲聊。\n")
 
 	return b.String()
 }

@@ -441,11 +441,11 @@ func TestChallenger_TimeoutClamping_AllBoundaries(t *testing.T) {
 		{4999, 5 * time.Second},   // 4.999s -> clamped to 5s min
 		{5000, 5 * time.Second},   // 5s exactly
 		{8000, 8 * time.Second},   // 8s in range
-		{12000, 12 * time.Second}, // 12s in range
-		{15000, 15 * time.Second}, // 15s exactly
-		{15001, 15 * time.Second}, // 15.001s -> clamped to 15s max
-		{45000, 15 * time.Second}, // 45s legacy -> clamped to 15s max
-		{60000, 15 * time.Second}, // 60s -> clamped to 15s max
+		{15000, 15 * time.Second}, // 15s in range
+		{35000, 35 * time.Second}, // 35s in range
+		{60000, 60 * time.Second}, // 60s exactly
+		{60001, 60 * time.Second}, // 60.001s -> clamped to 60s max
+		{90000, 60 * time.Second}, // 90s legacy -> clamped to 60s max
 	}
 
 	for _, c := range cases {

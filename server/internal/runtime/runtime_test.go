@@ -220,10 +220,10 @@ func TestRuntime_TimeoutConfiguration(t *testing.T) {
 		t.Errorf("Expected lower bound 5s, got %v", orchLow.GetClientTimeout())
 	}
 
-	// 3. Maximum bound: 15s (when TimeoutMs = 45000 legacy)
-	orchHigh := runtime.NewOrchestrator(store, personaMgr, memoryEng, sched, runtime.LLMConfig{TimeoutMs: 45000})
-	if orchHigh.GetClientTimeout() != 15*time.Second {
-		t.Errorf("Expected upper bound 15s, got %v", orchHigh.GetClientTimeout())
+	// 3. Maximum bound: 60s (when TimeoutMs = 90000 legacy)
+	orchHigh := runtime.NewOrchestrator(store, personaMgr, memoryEng, sched, runtime.LLMConfig{TimeoutMs: 90000})
+	if orchHigh.GetClientTimeout() != 60*time.Second {
+		t.Errorf("Expected upper bound 60s, got %v", orchHigh.GetClientTimeout())
 	}
 
 	// 4. Valid configured timeout: 10s

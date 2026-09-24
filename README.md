@@ -1,4 +1,4 @@
-# EIDOLON v1.4.0-preview.2
+# EIDOLON v1.4.0-preview.3
 
 <p align="center">
   <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.2-blue.svg" alt="Release: v1.4.0-preview.2">
+  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.3-blue.svg" alt="Release: v1.4.0-preview.3">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
@@ -553,6 +553,32 @@ npm run build:server && eidolon service start
 ---
 
 ## 8. Changelog / 更新日志
+
+### v1.4.0-preview.3 (2026-09-24)
+
+**🔥 多场景拟真行为调控、去油腻禁忌防线与超时上限松绑 / Multi-Scenario Behavioral Modulation, Anti-Greasy Redlines & Timeout Boundary Fix**
+
+- **多场景行为调控与人物灵魂注入 (Multi-Scenario Behavioral Modulation & Character Soul)**:
+  - 确立“王雅雯”（河南省实验中学初中生、典型嘴硬傲娇、自尊心强、反差萌、爱吐槽）核心人设画像。
+  - 落地 5 大场景差异化行为与情绪反应矩阵（早晨问候极简随性、被查岗/催打招呼傲娇回怼、直球表白震惊慌乱嘴硬否认、情感危机/质问沉重回避与心理防卫、共同兴趣自然分享）。
+- **去油腻红线绝对防守 (Strict Anti-Greasy & Anti-AI Redlines)**:
+  - 严禁“宝贝”、“亲爱的”、“宝宝”、“哥哥”等油腻违和称谓。
+  - 严禁“嘿嘿我也在呢一直都在🥰”、“撒娇”、“小可爱”等谄媚 AI 女仆套话。
+  - Go 运行时 `runtime.go` 引入主动去油过滤（`SanitizeOutput`），净化潜在媚俗词汇与 AI 助手口癖。
+- **超时上限松绑与实时生成保障 (Timeout Upper Bound Relaxation to 60s)**:
+  - 诊断并修复 Go 运行时将 LLM 客户端超时硬编码 clamp 到 15 秒（`timeout > 15s -> 15s`）导致的致命缺陷。带思维链 (CoT) 的本地模型 `ling-3.0-flash-fin-free` 耗时 ~18-20s，此前所有对话均在 15s 发生超时并退回兜底。
+  - 将运行时超时上限放宽至 60 秒，完美承载推理型模型的全流程生成，让真模型输出重回对话流。
+- **情境化兜底优先级重构 (Prioritized Fallback Engine)**:
+  - `getPersonaFallback` 优先级重构：将情感危机、突发表白、查岗质问等高压语义优先匹配，彻底解决“你为什么离开我”因包含“为什么”而被普通疑问句拦截返回“没干嘛呀”的逻辑颠倒。
+  - 清理兜底中一切带油腻字眼的预置文本，确保即使在网络中断极端情况下也能坚守真实傲娇初中生调性。
+- **全量测试与实机端到端验证**:
+  - 更新全部 Go 单元测试与压力测试，Node.js 246/246 tests 全部通过。
+  - 实机验证 4 大极端场景对话，回复精准、情感真实、自然分段打字，傲娇反差萌表现完美。
+
+### v1.4.0-preview.2 (2026-09-23)
+
+- 根除历史 Openers 轮询机制，避免模型超时退化为磁带复读机。
+- 引入 Burst 防抖窗口与智能 Quote-Reply。
 
 ### v1.4.0-preview.1 (2026-09-23)
 
