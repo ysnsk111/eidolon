@@ -1,6 +1,6 @@
 {
   "name": "eidolon",
-  "version": "1.4.0-preview.3",
+  "version": "1.4.0-preview.4",
   "description": "Persona Distillation & Memory Runtime — Preserve expression. Reconstruct context. Measure fidelity.",
   "main": "cli/index.js",
   "type": "module",

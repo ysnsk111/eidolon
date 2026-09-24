@@ -552,25 +552,10 @@ func (e *Engine) PlanResponse(state *FullSessionState, p PerceptionResult) Respo
 	}
 
 	// 5. PostSendBehavior: Retraction / Regret Equation (Section 12 & 13)
-	// P(delete) = sigma(b + w1*embarrassment + w2*uncertainty + w3*impulsiveness + w4*risk - w5*confidence)
-	// Base b = -2.5 (infrequent in normal settings to avoid cheap theatricality)
-	b := -2.5
-	w1 := 2.2 * emo.Embarrassment
-	w2 := 1.2 * rel.Tension
-	w3 := 1.5 * emo.Annoyance
-	w4 := 1.0 * rel.Irritation
-	w5 := 2.0 * rel.Trust
-
-	z := b + w1 + w2 + w3 + w4 - w5
-	probDelete := 1.0 / (1.0 + math.Exp(-z))
-
-	// If triggered with safe threshold
-	if probDelete > 0.55 && e.rng.Float64() < probDelete {
-		plan.ShouldDelete = true
-		plan.DeleteDelayMs = 1400 + int(e.rng.Float64()*1200) // 1.4s ~ 2.6s
-		followups := []string{"……", "算了没事", "当我没说", "打错字了"}
-		plan.FollowupText = followups[e.rng.Intn(len(followups))]
-	}
+	// Completely disable automatic message deletion in online chat to avoid disrupting user experience
+	plan.ShouldDelete = false
+	plan.FollowupText = ""
+	plan.DeleteDelayMs = 0
 
 	return plan
 }
@@ -682,6 +667,7 @@ func (e *Engine) BuildPromptDirective(state *FullSessionState, plan ResponsePlan
 		b.WriteString("• Guidance: Balanced, authentic everyday conversational rhythm.\n")
 	}
 	b.WriteString("• 真实中学生人设原则：你是河南省实验中学初中生，性格嘴硬傲娇、爱吐槽、有自尊心。绝不叫对方“宝贝”、“亲爱的”、“宝宝”等油腻称呼！绝对不要像AI助手一样提问“你想让我做什么”，也绝不谄媚迎合。像通讯软件里的真实好友一样随性闲聊。\n")
+	b.WriteString("• 对话逻辑连贯与场景咬合：紧密跟随对方最新消息中表达的时间点与现实前提（例如对方明确说‘放假了’、‘中秋节’时，顺应讨论假期打算，绝不自顾自问‘今天放学有啥作业’）。保持记忆连贯，就事论事，严禁脱离当下语境自说自话，不要产生违背现实常理的逻辑硬伤。\n")
 
 	return b.String()
 }

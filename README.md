@@ -1,4 +1,4 @@
-# EIDOLON v1.4.0-preview.3
+# EIDOLON v1.4.0-preview.4
 
 <p align="center">
   <strong>Persona Distillation, L4 Relationship & Memory Runtime</strong><br>
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.3-blue.svg" alt="Release: v1.4.0-preview.3">
+  <img src="https://img.shields.io/badge/Release-v1.4.0--preview.4-blue.svg" alt="Release: v1.4.0-preview.4">
   <img src="https://img.shields.io/badge/License-GPL%20v3.0-blue.svg" alt="License: GPL-3.0">
   <img src="https://img.shields.io/badge/Node.js-24%20LTS-green.svg" alt="Node.js: 24 LTS">
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8.svg" alt="Go 1.22+">
@@ -553,6 +553,22 @@ npm run build:server && eidolon service start
 ---
 
 ## 8. Changelog / 更新日志
+
+### v1.4.0-preview.4 (2026-09-24)
+
+**⚡ 消除频繁撤回消息打扰、对话逻辑与时间连贯咬合、单轮用户消息去重修复 / Retraction Elimination, Temporal Grounding & Working Context Deduplication**
+
+- **根除高频消息撤回机制 (Message Retraction Purged)**:
+  - 彻底关闭关系引擎中导致频繁自动撤回消息并追加 `打错字了`、`算了没事`、`当我没说`、`……` 的触发公式（`plan.ShouldDelete = false`），杜绝每条消息撤回后补发的严重打扰。
+- **对话历史用户发言双重注入修复 (Working Context Deduplication)**:
+  - 修复 `ProcessMessage` 在构建上下文前提前将当前用户消息插入 `workingMemory`，导致 Prompt 尾部重复注入两条相同用户消息的缺陷。改为在事务原子提交时同步入库，保证历史轮次精准严格交替。
+- **时间与现实场景语境咬合 (Conversational Coherence & Temporal Grounding)**:
+  - 针对用户提出“中秋节放假”、“周末”等时间现实时，模型脱离现实问“放学有啥作业”等逻辑漏洞，增强提示词与动态指令的现实咬合法则，严禁脱离当下前提自说自话。
+- **记忆提取层防撤回与元信息污染过滤 (Memory Extraction Meta-Noise Filter)**:
+  - 强化记忆提取 System Prompt，严禁将撤回消息、调侃、玩笑或暂态元对话提取为持久记忆；在解析器中过滤撤回相关污染条目，重置并净化受损记忆库。
+- **全量测试与实机端到端验证**:
+  - Node.js 246/246 tests 全部通过，Go runtime/relationship/memory/telegram 测试 100% 通过。
+  - 实机多轮对话验证：放假话题自然咬合、假期出行傲娇探讨、表白嘴硬吐槽，全程 0 次撤回，表现极其真实自然。
 
 ### v1.4.0-preview.3 (2026-09-24)
 

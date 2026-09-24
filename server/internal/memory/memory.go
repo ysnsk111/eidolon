@@ -145,6 +145,14 @@ func parseLLMExtractionJSON(raw string, now string) []storage.MemoryItem {
 		var items []storage.MemoryItem
 		for _, m := range parsed.Memories {
 			if m.Key != "" && m.Value != "" {
+				valLower := strings.ToLower(m.Value)
+				keyLower := strings.ToLower(m.Key)
+				if strings.Contains(valLower, "撤回") || strings.Contains(valLower, "recall") || strings.Contains(valLower, "withdraw") ||
+					strings.Contains(keyLower, "recall") || strings.Contains(keyLower, "withdraw") ||
+					strings.Contains(valLower, "防撤回") || strings.Contains(valLower, "message recall") {
+					continue
+				}
+
 				imp := m.Importance
 				if imp <= 0 {
 					imp = 0.70

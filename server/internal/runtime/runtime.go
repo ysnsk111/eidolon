@@ -122,7 +122,6 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 		Content:   userContent,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	o.memoryEng.AddWorkingMessage(sessionID, inMsg)
 
 	// 2. Context & Memory Retrieval
 	retrieval := o.memoryEng.RetrieveContext(personaID, sessionID, userContent)
@@ -197,7 +196,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	if o.llmCfg.BaseURL != "" && o.llmCfg.Model != "" {
 		extractor = func(prompt string) (string, error) {
 			critMsgs := []map[string]string{
-				{"role": "system", "content": "Extract memories as JSON object with 'memories': [{category, key, value, importance_score, confidence}]"},
+				{"role": "system", "content": "Extract memories as JSON object with 'memories': [{category, key, value, importance_score, confidence}]. Only extract concrete biographical facts, real-world events, or explicitly stated personal preferences. Do NOT extract jokes, sarcasm, teasing, meta-comments about message retractions, or ephemeral banter. If none, return empty memories: []."},
 				{"role": "user", "content": prompt},
 			}
 			return o.callLLM(critMsgs, 0.1, 300)
@@ -253,6 +252,7 @@ func (o *Orchestrator) ProcessMessage(sessionID, userID, userContent string) (*G
 	if err := o.store.CommitInteraction(tx); err != nil {
 		return nil, fmt.Errorf("failed to commit interaction transaction: %w", err)
 	}
+	o.memoryEng.AddWorkingMessage(sessionID, inMsg)
 	o.memoryEng.AddWorkingMessage(sessionID, outMsg)
 
 	return &GenerationResult{
